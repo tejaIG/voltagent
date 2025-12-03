@@ -91,6 +91,18 @@ const config: Config = {
         sidebarCollapsed: false,
       },
     ],
+    // VoltAgent Recipes & Guides - Separate docs instance
+    [
+      "@docusaurus/plugin-content-docs",
+      {
+        id: "recipes",
+        path: "recipes",
+        routeBasePath: "recipes-and-guides",
+        sidebarPath: "./sidebarsRecipes.ts",
+        breadcrumbs: false,
+        sidebarCollapsed: false,
+      },
+    ],
     "./plugins/fetch-tweets.js",
     "./plugins/clarity/index.js",
     "./plugins/ahrefs/index.js",
@@ -185,6 +197,14 @@ const config: Config = {
           {
             to: "/",
             from: "/pricing/",
+          },
+          {
+            to: "/recipes-and-guides/",
+            from: "/recipes/",
+          },
+          {
+            to: "/recipes-and-guides/slack-agent/",
+            from: "/recipes/slack-agent/",
           },
           {
             to: "/docs/getting-started/providers-models/",
