@@ -16,6 +16,7 @@ import type {
   GetMessagesOptions,
   StorageAdapter,
   StoredUIMessage,
+  WorkflowRunQuery,
   WorkflowStateEntry,
   WorkingMemoryScope,
 } from "../../types";
@@ -31,6 +32,51 @@ interface UserInfo {
   };
   createdAt: Date;
   updatedAt: Date;
+}
+
+function areMetadataValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) {
+    return false;
+  }
+
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+
+    for (let index = 0; index < left.length; index++) {
+      if (!areMetadataValuesEqual(left[index], right[index])) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  for (const key of leftKeys) {
+    if (!Object.prototype.hasOwnProperty.call(rightRecord, key)) {
+      return false;
+    }
+
+    if (!areMetadataValuesEqual(leftRecord[key], rightRecord[key])) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -76,8 +122,21 @@ export class InMemoryStorageAdapter implements StorageAdapter {
       conversationId,
     };
 
+    const conversationMessages = this.storage[userId][conversationId];
+    const existingIndex = conversationMessages.findIndex((msg) => msg.id === message.id);
+
+    if (existingIndex >= 0) {
+      const existing = conversationMessages[existingIndex];
+      conversationMessages[existingIndex] = {
+        ...existing,
+        ...storedMessage,
+        createdAt: existing.createdAt,
+      };
+      return;
+    }
+
     // Add message to storage
-    this.storage[userId][conversationId].push(storedMessage);
+    conversationMessages.push(storedMessage);
   }
 
   /**
@@ -103,7 +162,7 @@ export class InMemoryStorageAdapter implements StorageAdapter {
     options?: GetMessagesOptions,
     _context?: OperationContext,
   ): Promise<UIMessage<{ createdAt: Date }>[]> {
-    const { limit = 100, before, after, roles } = options || {};
+    const { limit, before, after, roles } = options || {};
 
     // Get user's messages or return empty array
     const userMessages = this.storage[userId] || {};
@@ -193,6 +252,25 @@ export class InMemoryStorageAdapter implements StorageAdapter {
       result: step.result ? { ...step.result } : step.result,
       usage: step.usage ? { ...step.usage } : step.usage,
     }));
+  }
+
+  /**
+   * Delete specific messages by ID for a conversation
+   */
+  async deleteMessages(
+    messageIds: string[],
+    userId: string,
+    conversationId: string,
+    _context?: OperationContext,
+  ): Promise<void> {
+    if (!this.storage[userId]?.[conversationId]) {
+      return;
+    }
+
+    const ids = new Set(messageIds);
+    this.storage[userId][conversationId] = this.storage[userId][conversationId].filter(
+      (message) => !ids.has(message.id),
+    );
   }
 
   /**
@@ -321,6 +399,23 @@ export class InMemoryStorageAdapter implements StorageAdapter {
     conversations = conversations.slice(offset, offset + limit);
 
     return conversations.map((c) => deepClone(c));
+  }
+
+  /**
+   * Count conversations matching query filters
+   */
+  async countConversations(options: ConversationQueryOptions): Promise<number> {
+    let conversations = Array.from(this.conversations.values());
+
+    if (options.userId) {
+      conversations = conversations.filter((c) => c.userId === options.userId);
+    }
+
+    if (options.resourceId) {
+      conversations = conversations.filter((c) => c.resourceId === options.resourceId);
+    }
+
+    return conversations.length;
   }
 
   /**
@@ -463,6 +558,63 @@ export class InMemoryStorageAdapter implements StorageAdapter {
   async getWorkflowState(executionId: string): Promise<WorkflowStateEntry | null> {
     const state = this.workflowStates.get(executionId);
     return state ? deepClone(state) : null;
+  }
+
+  /**
+   * Query workflow states with optional filters
+   */
+  async queryWorkflowRuns(query: WorkflowRunQuery): Promise<WorkflowStateEntry[]> {
+    const states: WorkflowStateEntry[] = [];
+
+    if (query.workflowId) {
+      const executionIds = this.workflowStatesByWorkflow.get(query.workflowId);
+      if (executionIds) {
+        for (const id of executionIds) {
+          const state = this.workflowStates.get(id);
+          if (state) {
+            states.push(deepClone(state));
+          }
+        }
+      }
+    } else {
+      for (const state of this.workflowStates.values()) {
+        states.push(deepClone(state));
+      }
+    }
+
+    const filtered = states
+      .filter((state) => {
+        if (query.status && state.status !== query.status) {
+          return false;
+        }
+        if (query.from && state.createdAt < query.from) {
+          return false;
+        }
+        if (query.to && state.createdAt > query.to) {
+          return false;
+        }
+        if (query.userId && state.userId !== query.userId) {
+          return false;
+        }
+        if (query.metadata) {
+          const stateMetadata = state.metadata ?? {};
+          for (const [key, value] of Object.entries(query.metadata)) {
+            if (!Object.prototype.hasOwnProperty.call(stateMetadata, key)) {
+              return false;
+            }
+            if (!areMetadataValuesEqual((stateMetadata as Record<string, unknown>)[key], value)) {
+              return false;
+            }
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    const start = query.offset ?? 0;
+    const end = query.limit ? start + query.limit : undefined;
+
+    return filtered.slice(start, end);
   }
 
   /**

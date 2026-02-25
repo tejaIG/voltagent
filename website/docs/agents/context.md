@@ -31,7 +31,6 @@ Set default `context` when creating the agent. This context is used for all oper
 
 ```typescript
 import { Agent } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 // Set default context at agent creation
 const defaultContext = new Map();
@@ -40,7 +39,7 @@ defaultContext.set("projectId", "my-project");
 
 const agent = new Agent({
   name: "SimpleAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   instructions: "You are a helpful assistant.",
   context: defaultContext, // Default context for all operations
 });
@@ -67,7 +66,7 @@ Pass `context` when calling the agent to provide operation-specific data:
 ```typescript
 const agent = new Agent({
   name: "SimpleAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   instructions: "You are a helpful assistant.",
 });
 
@@ -161,7 +160,7 @@ import { createHooks } from "@voltagent/core";
 
 const agent = new Agent({
   name: "HookAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   hooks: createHooks({
     onStart: (context) => {
       // Read data that was passed in
@@ -236,7 +235,7 @@ const loggerTool = createTool({
 
 const agentWithTool = new Agent({
   name: "ToolAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   tools: [loggerTool],
   instructions: "Use the log_message tool to log what the user says.",
 });
@@ -265,6 +264,7 @@ The `options` parameter in tool `execute` functions combines `ToolExecuteOptions
 - `operationId` - Unique operation identifier
 - `userId` - User identifier (if provided)
 - `conversationId` - Conversation identifier (if provided)
+- `workspace` - Workspace instance configured on the agent (if available)
 - `context` - User-defined context Map (read/write)
 - `systemContext` - Internal system context Map
 - `logger` - Operation-scoped logger with full context
@@ -379,7 +379,6 @@ The `input` and `output` fields are particularly useful for:
 
 ```typescript
 import { Agent, createHooks } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 const auditHooks = createHooks({
   onEnd: async ({ context, output }) => {
@@ -398,7 +397,7 @@ const auditHooks = createHooks({
 
 const auditedAgent = new Agent({
   name: "Audited Assistant",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   instructions: "You are a helpful assistant.",
   hooks: auditHooks,
 });
@@ -422,6 +421,9 @@ interface OperationContext {
 
   // Optional conversation identifier
   conversationId?: string;
+
+  // Workspace configured on the agent (if any)
+  workspace?: Workspace;
 }
 ```
 
@@ -438,6 +440,7 @@ const response = await agent.generateText("Hello", {
 console.log(operationContext.userId); // "user-123"
 console.log(operationContext.conversationId); // "conv-456"
 console.log(operationContext.context.get("language")); // "en"
+console.log(operationContext.workspace?.id); // e.g. "demo-workspace"
 ```
 
 ### Operation Metadata (Read-Only)
@@ -465,7 +468,7 @@ interface OperationContext {
 ```typescript
 const agent = new Agent({
   name: "TrackedAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   hooks: createHooks({
     onEnd: async ({ context }) => {
       const duration = Date.now() - context.startTime.getTime();
@@ -538,11 +541,10 @@ Here's how to use metadata fields for observability:
 
 ```typescript
 import { Agent, createHooks } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 const observableAgent = new Agent({
   name: "ObservableAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   hooks: createHooks({
     onStart: ({ context }) => {
       // Use the scoped logger
@@ -587,11 +589,10 @@ The `abortController` field allows operation cancellation:
 
 ```typescript
 import { Agent } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 const agent = new Agent({
   name: "CancellableAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   instructions: "You are a helpful assistant.",
 });
 
@@ -647,7 +648,7 @@ class SimpleRetriever extends BaseRetriever {
 
 const agentWithRetriever = new Agent({
   name: "RetrievalAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   retriever: new SimpleRetriever(),
   instructions: "Answer using retrieved information.",
 });
@@ -668,7 +669,7 @@ When a supervisor delegates to sub-agents, the parent's `OperationContext` is pa
 // Worker agent - automatically receives supervisor's context
 const workerAgent = new Agent({
   name: "WorkerAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   hooks: createHooks({
     onStart: (context) => {
       // Automatically gets context from supervisor
@@ -686,7 +687,7 @@ const workerAgent = new Agent({
 // Supervisor agent
 const supervisorAgent = new Agent({
   name: "SupervisorAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   subAgents: [workerAgent],
   hooks: createHooks({
     onStart: (context) => {
@@ -768,7 +769,7 @@ const counterTool = createTool({
 // Agent with everything
 const fullAgent = new Agent({
   name: "FullAgent",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   retriever: new BasicRetriever(),
   tools: [counterTool],
   hooks: createHooks({
@@ -823,7 +824,7 @@ async function demonstrateFlow() {
 
 The `OperationContext` contains:
 
-- **User-managed**: `context` (Map), `userId`, `conversationId`
+- **User-managed**: `context` (Map), `userId`, `conversationId`, `workspace`
 - **Metadata**: `operationId`, `startTime`, `isActive`, `parentAgentId`
 - **System**: `systemContext`, `logger`, `traceContext`, `conversationSteps`, `abortController`, `cancellationError`, `elicitation`
 - **Input/Output**: `input`, `output` (automatically set)

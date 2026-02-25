@@ -157,7 +157,6 @@ Store as environment variables: `SUPABASE_URL` and `SUPABASE_KEY`
 ```ts
 import { Agent, Memory } from "@voltagent/core";
 import { SupabaseMemoryAdapter } from "@voltagent/supabase";
-import { openai } from "@ai-sdk/openai";
 
 // Using URL and key
 const memory = new Memory({
@@ -180,7 +179,7 @@ const memory = new Memory({
 
 const agent = new Agent({
   name: "Assistant",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   memory,
 });
 ```
@@ -225,16 +224,15 @@ See [Working Memory](./working-memory.md).
 ### Semantic Search
 
 ```ts
-import { Memory, AiSdkEmbeddingAdapter, InMemoryVectorAdapter } from "@voltagent/core";
+import { Memory, InMemoryVectorAdapter } from "@voltagent/core";
 import { SupabaseMemoryAdapter } from "@voltagent/supabase";
-import { openai } from "@ai-sdk/openai";
 
 const memory = new Memory({
   storage: new SupabaseMemoryAdapter({
     supabaseUrl: process.env.SUPABASE_URL!,
     supabaseKey: process.env.SUPABASE_KEY!,
   }),
-  embedding: new AiSdkEmbeddingAdapter(openai.embedding("text-embedding-3-small")),
+  embedding: "openai/text-embedding-3-small",
   vector: new InMemoryVectorAdapter(), // or pgvector adapter
 });
 ```
@@ -247,7 +245,6 @@ See [Semantic Search](./semantic-search.md).
 import { Agent, Memory } from "@voltagent/core";
 import { SupabaseMemoryAdapter } from "@voltagent/supabase";
 import { createClient } from "@supabase/supabase-js";
-import { openai } from "@ai-sdk/openai";
 
 const supabaseClient = createClient(
   process.env.SUPABASE_URL!,
@@ -262,7 +259,7 @@ const memory = new Memory({
 
 const agent = new Agent({
   name: "Assistant",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   memory,
 });
 ```

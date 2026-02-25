@@ -64,6 +64,10 @@ export default defineConfig({
 
 Install VoltAgent packages and development tools:
 
+:::tip Skills for AI assistants
+If you use an AI coding assistant, see [Docs for AI Assistants](/docs/ai-assistants) for local skills or MCP access.
+:::
+
 <Tabs>
   <TabItem value="npm" label="npm" default>
 
@@ -72,7 +76,7 @@ Install VoltAgent packages and development tools:
 npm install --save-dev typescript tsx tsdown @types/node @voltagent/cli
 
 # Install dependencies
-npm install @voltagent/core @voltagent/libsql @voltagent/server-hono @voltagent/logger ai @ai-sdk/openai@^2 zod@3
+npm install @voltagent/core @voltagent/libsql @voltagent/server-hono @voltagent/logger ai zod@3
 ```
 
   </TabItem>
@@ -83,7 +87,7 @@ npm install @voltagent/core @voltagent/libsql @voltagent/server-hono @voltagent/
 yarn add --dev typescript tsx tsdown @types/node @voltagent/cli
 
 # Install dependencies
-yarn add @voltagent/core @voltagent/libsql @voltagent/server-hono @voltagent/logger ai @ai-sdk/openai@^2 zod@3
+yarn add @voltagent/core @voltagent/libsql @voltagent/server-hono @voltagent/logger ai zod@3
 ```
 
   </TabItem>
@@ -94,7 +98,7 @@ yarn add @voltagent/core @voltagent/libsql @voltagent/server-hono @voltagent/log
 pnpm add --save-dev typescript tsx tsdown @types/node @voltagent/cli
 
 # Install dependencies
-pnpm add @voltagent/core @voltagent/libsql @voltagent/server-hono @voltagent/logger ai @ai-sdk/openai@^2 zod@3
+pnpm add @voltagent/core @voltagent/libsql @voltagent/server-hono @voltagent/logger ai zod@3
 ```
 
   </TabItem>
@@ -118,7 +122,6 @@ Create `src/index.ts`:
 import { VoltAgent, Agent, Memory } from "@voltagent/core";
 import { honoServer } from "@voltagent/server-hono"; // HTTP server
 import { LibSQLMemoryAdapter } from "@voltagent/libsql"; // For persistent memory
-import { openai } from "@ai-sdk/openai"; // Example model
 import { createPinoLogger } from "@voltagent/logger";
 
 // Create logger (optional but recommended)
@@ -131,8 +134,8 @@ const logger = createPinoLogger({
 const agent = new Agent({
   name: "my-agent",
   instructions: "A helpful assistant that answers questions without using tools",
-  // VoltAgent uses ai-sdk directly - pick any ai-sdk model
-  model: openai("gpt-4o-mini"),
+  // VoltAgent uses model strings - pick any provider/model id
+  model: "openai/gpt-4o-mini",
   // Optional: Add persistent memory (remove this to use default in-memory storage)
   memory: new Memory({
     storage: new LibSQLMemoryAdapter({
@@ -267,7 +270,7 @@ You should see the VoltAgent server startup message:
 ══════════════════════════════════════════════════
   ✓ HTTP Server:  http://localhost:3141
   ↪ Share it:    pnpm volt tunnel 3141 (secure HTTPS tunnel for teammates)
-     Docs: https://voltagent.dev/docs/deployment/local-tunnel/
+     Docs: https://voltagent.dev/deployment-docs/local-tunnel/
   ✓ Swagger UI:   http://localhost:3141/ui
 
   Test your agents with VoltOps Console: https://console.voltagent.dev
@@ -288,6 +291,7 @@ You should receive a response from your AI agent. The `dev` script uses `tsx wat
 
 ## Next Steps
 
+- [Deploy to Production](/deployment-docs/voltops) - Deploy your agent with VoltOps Deploy
 - [Tutorial](/tutorial/introduction) - Build agents with tools, memory, and integrations
 - [Agent Configuration](../agents/overview.md) - Agent options and settings
 - [Memory](../agents/memory/overview.md) - Conversation history and persistence

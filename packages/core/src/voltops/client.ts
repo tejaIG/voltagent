@@ -22,6 +22,7 @@ import type {
 import { AgentRegistry } from "../registries/agent-registry";
 import { VoltOpsActionsClient } from "./actions/client";
 // VoltAgentExporter removed - migrated to OpenTelemetry
+import { createLocalPromptHelper, isLocalPromptNotFoundError } from "./local-prompts";
 import { VoltOpsPromptManagerImpl } from "./prompt-manager";
 import type {
   VoltOpsClient as IVoltOpsClient,
@@ -31,9 +32,11 @@ import type {
   ManagedMemoryCredentialCreateResult,
   ManagedMemoryCredentialListResult,
   ManagedMemoryDatabaseSummary,
+  ManagedMemoryDeleteMessagesInput,
   ManagedMemoryDeleteVectorsInput,
   ManagedMemoryGetConversationStepsInput,
   ManagedMemoryGetMessagesInput,
+  ManagedMemoryQueryWorkflowRunsInput,
   ManagedMemorySearchVectorsInput,
   ManagedMemorySetWorkingMemoryInput,
   ManagedMemoryStoreVectorInput,
@@ -42,6 +45,7 @@ import type {
   ManagedMemoryVoltOpsClient,
   ManagedMemoryWorkflowStateUpdateInput,
   ManagedMemoryWorkingMemoryInput,
+  PromptContent,
   PromptHelper,
   PromptReference,
   VoltOpsAppendEvalRunResultsRequest,
@@ -52,6 +56,11 @@ import type {
   VoltOpsEvalRunSummary,
   VoltOpsEvalsApi,
   VoltOpsFailEvalRunRequest,
+  VoltOpsFeedback,
+  VoltOpsFeedbackConfig,
+  VoltOpsFeedbackCreateInput,
+  VoltOpsFeedbackToken,
+  VoltOpsFeedbackTokenCreateInput,
   VoltOpsPromptManager,
   VoltOpsScorerSummary,
 } from "./types";
@@ -234,6 +243,85 @@ export class VoltOpsClient implements IVoltOpsClient {
     return await this.fetchImpl(url, requestInit);
   }
 
+  public async createFeedbackToken(
+    input: VoltOpsFeedbackTokenCreateInput,
+  ): Promise<VoltOpsFeedbackToken> {
+    const payload: Record<string, unknown> = {
+      trace_id: input.traceId,
+      feedback_key: input.key,
+    };
+
+    if (input.feedbackConfig !== undefined) {
+      payload.feedback_config = input.feedbackConfig;
+    }
+    if (input.expiresAt !== undefined) {
+      payload.expires_at = input.expiresAt;
+    }
+    if (input.expiresIn !== undefined) {
+      payload.expires_in = input.expiresIn;
+    }
+
+    const response = await this.request<{
+      id?: string;
+      url?: string;
+      expires_at?: string;
+      feedback_config?: VoltOpsFeedbackConfig | null;
+    }>("POST", "/api/public/feedback/tokens", payload);
+
+    const id = response?.id;
+    const url = response?.url;
+    const expiresAt = response?.expires_at;
+    const feedbackConfig = response?.feedback_config ?? input.feedbackConfig ?? null;
+
+    if (!id || !url || !expiresAt) {
+      throw new Error("Failed to create feedback token via VoltOps");
+    }
+
+    return {
+      id,
+      url,
+      expiresAt,
+      feedbackConfig,
+    };
+  }
+
+  public async createFeedback(input: VoltOpsFeedbackCreateInput): Promise<VoltOpsFeedback> {
+    const payload: Record<string, unknown> = {
+      trace_id: input.traceId,
+      key: input.key,
+    };
+
+    if (input.id !== undefined) {
+      payload.id = input.id;
+    }
+    if (input.score !== undefined) {
+      payload.score = input.score;
+    }
+    if (input.value !== undefined) {
+      payload.value = input.value;
+    }
+    if (input.correction !== undefined) {
+      payload.correction = input.correction;
+    }
+    if (input.comment !== undefined) {
+      payload.comment = input.comment;
+    }
+    if (input.feedbackConfig !== undefined) {
+      payload.feedback_config = input.feedbackConfig;
+    }
+    if (input.feedbackSource !== undefined) {
+      payload.feedback_source = input.feedbackSource;
+    }
+    if (input.feedbackSourceType !== undefined) {
+      payload.feedback_source_type = input.feedbackSourceType;
+    }
+    if (input.createdAt !== undefined) {
+      payload.created_at = input.createdAt;
+    }
+
+    return await this.request<VoltOpsFeedback>("POST", "/api/public/feedback", payload);
+  }
+
   // getObservabilityExporter removed - observability now handled by VoltAgentObservability
 
   /**
@@ -352,6 +440,7 @@ export class VoltOpsClient implements IVoltOpsClient {
         addBatch: (databaseId, input) => this.addManagedMemoryMessages(databaseId, input),
         list: (databaseId, input) => this.getManagedMemoryMessages(databaseId, input),
         clear: (databaseId, input) => this.clearManagedMemoryMessages(databaseId, input),
+        delete: (databaseId, input) => this.deleteManagedMemoryMessages(databaseId, input),
       },
       conversations: {
         create: (databaseId, input) => this.createManagedMemoryConversation(databaseId, input),
@@ -373,8 +462,13 @@ export class VoltOpsClient implements IVoltOpsClient {
         set: (databaseId, executionId, state) =>
           this.setManagedMemoryWorkflowState(databaseId, executionId, state),
         update: (databaseId, input) => this.updateManagedMemoryWorkflowState(databaseId, input),
+        list: (databaseId, input) => this.getManagedMemoryWorkflowStates(databaseId, input),
+        query: (databaseId, input) => this.getManagedMemoryWorkflowStates(databaseId, input),
         listSuspended: (databaseId, workflowId) =>
-          this.getManagedMemorySuspendedWorkflowStates(databaseId, workflowId),
+          this.getManagedMemoryWorkflowStates(databaseId, {
+            workflowId,
+            status: "suspended",
+          }),
       },
       steps: {
         save: (databaseId, steps) => this.saveManagedMemoryConversationSteps(databaseId, steps),
@@ -505,6 +599,21 @@ export class VoltOpsClient implements IVoltOpsClient {
 
     if (!payload?.success) {
       throw new Error("Failed to clear managed memory messages via VoltOps");
+    }
+  }
+
+  private async deleteManagedMemoryMessages(
+    databaseId: string,
+    input: ManagedMemoryDeleteMessagesInput,
+  ): Promise<void> {
+    const payload = await this.request<{ success: boolean }>(
+      "POST",
+      `/managed-memory/projects/databases/${databaseId}/messages/delete`,
+      input,
+    );
+
+    if (!payload?.success) {
+      throw new Error("Failed to delete managed memory messages via VoltOps");
     }
   }
 
@@ -818,11 +927,36 @@ export class VoltOpsClient implements IVoltOpsClient {
     }
   }
 
-  private async getManagedMemorySuspendedWorkflowStates(
+  private async getManagedMemoryWorkflowStates(
     databaseId: string,
-    workflowId: string,
+    input: ManagedMemoryQueryWorkflowRunsInput,
   ): Promise<WorkflowStateEntry[]> {
-    const query = this.buildQueryString({ workflowId });
+    const metadataQueryParams =
+      input.metadata && Object.keys(input.metadata).length > 0
+        ? Object.fromEntries(
+            Object.entries(input.metadata).map(([key, value]) => [
+              `metadata.${key}`,
+              value === null
+                ? "null"
+                : typeof value === "string"
+                  ? value
+                  : typeof value === "number" || typeof value === "boolean"
+                    ? String(value)
+                    : safeStringify(value),
+            ]),
+          )
+        : undefined;
+
+    const query = this.buildQueryString({
+      workflowId: input.workflowId,
+      status: input.status,
+      from: input.from?.toISOString(),
+      to: input.to?.toISOString(),
+      limit: input.limit,
+      offset: input.offset,
+      userId: input.userId,
+      ...(metadataQueryParams ?? {}),
+    });
 
     const payload = await this.request<{
       success: boolean;
@@ -830,7 +964,7 @@ export class VoltOpsClient implements IVoltOpsClient {
     }>("GET", `/managed-memory/projects/databases/${databaseId}/workflow-states${query}`);
 
     if (!payload?.success) {
-      throw new Error("Failed to fetch suspended managed memory workflow states via VoltOps");
+      throw new Error("Failed to fetch managed memory workflow states via VoltOps");
     }
 
     return payload.data?.workflowStates ?? [];
@@ -880,7 +1014,7 @@ export class VoltOpsClient implements IVoltOpsClient {
 
   /**
    * Static method to create prompt helper with priority-based fallback
-   * Priority: Agent VoltOpsClient > Global VoltOpsClient > Fallback instructions
+   * Priority: Local prompts > Agent VoltOpsClient > Global VoltOpsClient > Fallback instructions
    */
   public static createPromptHelperWithFallback(
     agentId: string,
@@ -888,18 +1022,14 @@ export class VoltOpsClient implements IVoltOpsClient {
     fallbackInstructions: string,
     agentVoltOpsClient?: VoltOpsClient,
   ): PromptHelper {
-    // Priority 1: Agent-specific VoltOpsClient (highest priority)
-    if (agentVoltOpsClient?.prompts) {
-      return agentVoltOpsClient.createPromptHelper(agentId);
+    const helper = VoltOpsClient.createPromptHelperFromSources(agentId, agentVoltOpsClient);
+    if (helper) {
+      return helper;
     }
 
-    // Priority 2: Global VoltOpsClient
     const globalVoltOpsClient = AgentRegistry.getInstance().getGlobalVoltOpsClient();
-    if (globalVoltOpsClient?.prompts) {
-      return globalVoltOpsClient.createPromptHelper(agentId);
-    }
 
-    // Priority 3: Fallback to default instructions
+    // Priority 4: Fallback to default instructions
     const logger = new LoggerProxy({ component: "voltops-prompt-fallback", agentName });
 
     return {
@@ -908,14 +1038,16 @@ export class VoltOpsClient implements IVoltOpsClient {
 💡 VoltOps Prompts
    
    Agent: ${agentName}
+   ❌ Local prompts: Not configured
    ❌ Agent VoltOpsClient: ${agentVoltOpsClient ? "Found but prompts disabled" : "Not configured"}
    ❌ Global VoltOpsClient: ${globalVoltOpsClient ? "Found but prompts disabled" : "Not configured"}
    ✅ Using fallback instructions
    
    Priority Order:
-   1. Agent VoltOpsClient (agent-specific, highest priority)
-   2. Global VoltOpsClient (from VoltAgent constructor)  
-   3. Fallback instructions (current)
+   1. Local prompts (.voltagent/prompts or VOLTAGENT_PROMPTS_PATH)
+   2. Agent VoltOpsClient (agent-specific, highest priority)
+   3. Global VoltOpsClient (from VoltAgent constructor)  
+   4. Fallback instructions (current)
    
    To enable dynamic prompt management:
    1. Create prompts at: http://console.voltagent.dev/prompts
@@ -934,6 +1066,10 @@ export class VoltOpsClient implements IVoltOpsClient {
    new VoltAgent({
      voltOpsClient: new VoltOpsClient({ ... })
    });
+
+   To use local prompt pull:
+   1. Run: volt prompts pull
+   2. Keep prompts in .voltagent/prompts or set VOLTAGENT_PROMPTS_PATH
    
    📖 Full documentation: https://voltagent.dev/docs/agents/prompts/#3-voltops-prompt-management
         `);
@@ -947,6 +1083,112 @@ export class VoltOpsClient implements IVoltOpsClient {
           type: "text",
           text: fallbackInstructions,
         };
+      },
+    };
+  }
+
+  /**
+   * Create a prompt helper from available sources without fallback instructions.
+   * Priority: Local prompts > Agent VoltOpsClient > Global VoltOpsClient.
+   */
+  public static createPromptHelperFromSources(
+    agentId: string,
+    agentVoltOpsClient?: VoltOpsClient,
+  ): PromptHelper | undefined {
+    const localHelper = createLocalPromptHelper();
+    const agentHelper = agentVoltOpsClient?.prompts
+      ? agentVoltOpsClient.createPromptHelper(agentId)
+      : undefined;
+    const globalVoltOpsClient = AgentRegistry.getInstance().getGlobalVoltOpsClient();
+    const globalHelper =
+      !agentHelper && globalVoltOpsClient?.prompts
+        ? globalVoltOpsClient.createPromptHelper(agentId)
+        : undefined;
+
+    const helpers: Array<{ source: "local" | "agent" | "global"; helper: PromptHelper }> = [];
+    const remoteHelper = agentHelper ?? globalHelper;
+    const logger = new LoggerProxy({ component: "voltops-prompt-helper" });
+    const warnedPrompts = new Set<string>();
+
+    if (localHelper) {
+      helpers.push({ source: "local", helper: localHelper.helper });
+    }
+    if (agentHelper) {
+      helpers.push({ source: "agent", helper: agentHelper });
+    }
+    if (globalHelper) {
+      helpers.push({ source: "global", helper: globalHelper });
+    }
+
+    if (helpers.length === 0) {
+      return undefined;
+    }
+
+    const warnOnOutdatedLocalPrompt = async (
+      prompt: PromptContent,
+      reference: PromptReference,
+    ): Promise<PromptContent> => {
+      const localVersion = prompt.metadata?.version;
+      if (!remoteHelper || localVersion === undefined) {
+        return prompt;
+      }
+
+      try {
+        const remotePrompt = await remoteHelper.getPrompt({
+          promptName: reference.promptName,
+          label: "latest",
+        });
+        const remoteVersion = remotePrompt.metadata?.version;
+
+        if (remoteVersion === undefined) {
+          return prompt;
+        }
+
+        const outdated = remoteVersion > localVersion;
+        prompt.metadata = {
+          ...prompt.metadata,
+          latest_version: remoteVersion,
+          outdated,
+        };
+
+        if (outdated && !warnedPrompts.has(reference.promptName)) {
+          logger.warn(
+            `Local prompt '${reference.promptName}' is behind the online version (local v${localVersion}, online v${remoteVersion}).`,
+          );
+          warnedPrompts.add(reference.promptName);
+        }
+      } catch {
+        // Ignore remote check errors; local prompt should still be used.
+      }
+
+      return prompt;
+    };
+
+    return {
+      getPrompt: async (reference: PromptReference) => {
+        let lastError: Error | null = null;
+
+        for (const entry of helpers) {
+          try {
+            const result = await entry.helper.getPrompt(reference);
+            if (entry.source === "local") {
+              return await warnOnOutdatedLocalPrompt(result, reference);
+            }
+            return result;
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+            if (entry.source === "local" && isLocalPromptNotFoundError(error)) {
+              continue;
+            }
+            throw lastError;
+          }
+        }
+
+        if (lastError) {
+          throw lastError;
+        }
+
+        throw new Error("Prompt not found in configured sources");
       },
     };
   }

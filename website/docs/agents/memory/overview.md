@@ -14,6 +14,7 @@ VoltAgent's `Memory` class stores conversation history and optional semantic sea
 | **InMemory**       | `@voltagent/core`             | None (RAM only)        | Development, testing             |
 | **Managed Memory** | `@voltagent/voltagent-memory` | VoltOps-hosted         | Production-ready, zero-setup     |
 | **LibSQL**         | `@voltagent/libsql`           | Local SQLite or remote | Self-hosted, edge deployments    |
+| **Cloudflare D1**  | `@voltagent/cloudflare-d1`    | Cloudflare D1 (SQLite) | Cloudflare Workers deployments   |
 | **Postgres**       | `@voltagent/postgres`         | Self-hosted Postgres   | Existing Postgres infrastructure |
 | **Supabase**       | `@voltagent/supabase`         | Supabase               | Supabase-based applications      |
 
@@ -25,12 +26,51 @@ VoltAgent's `Memory` class stores conversation history and optional semantic sea
 - Auto-creates conversations on first message
 - Configurable message limits (oldest pruned first)
 
+### Conversation Titles (Optional)
+
+When enabled, VoltAgent generates a concise title from the first user message. Title generation runs only when the conversation is created and does not overwrite existing titles.
+
+```ts
+import { Memory } from "@voltagent/core";
+import { LibSQLMemoryAdapter } from "@voltagent/libsql";
+
+const memory = new Memory({
+  storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/memory.db" }),
+  generateTitle: true,
+});
+```
+
+Custom configuration:
+
+```ts
+const memory = new Memory({
+  storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/memory.db" }),
+  generateTitle: {
+    enabled: true,
+    model: "gpt-4o-mini", // default agent model
+    systemPrompt: "Generate a short title (max 6 words).",
+    maxLength: 60,
+    maxOutputTokens: 24,
+  },
+});
+```
+
+Notes:
+
+- The agent's main model is used unless `generateTitle.model` is provided.
+- `generateTitle.model` accepts either a provider/model string or an AI SDK model instance.
+- Only the first user message is summarized.
+- If you create conversations manually via the Memory API, set `title` explicitly.
+
 ### Conversation Steps
 
 - Every LLM/text/tool step can be recorded with metadata (operationId, agent/sub-agent IDs, usage, tool arguments/results).
 - VoltOps Observability consumes these records to render the Memory Explorer “Steps” tab and to correlate traces/logs with memory.
 - Adapters that implement the step APIs persist sub-agent activity alongside primary agent steps, so hierarchies stay visible.
 - If an adapter does not support steps, the console warns with “Conversation steps are not supported by this memory adapter.”
+- By default, agents checkpoint conversation progress during multi-step runs (`conversationPersistence.mode: "step"`).
+- Tool completion events (`tool-result`, `tool-error`) trigger immediate flushes by default (`flushOnToolResult: true`), reducing history loss risk on crashes or process interruption.
+- Use `conversationPersistence.mode: "finish"` if you want end-of-turn persistence only.
 
 ### Semantic Search (Optional)
 
@@ -57,19 +97,18 @@ Agents accept a `memory` option:
 
 ```ts
 import { Agent, Memory } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
-// Default: in-memory storage (no persistence)
+// Default when omitted: built-in in-memory storage
 const agent1 = new Agent({
   name: "Assistant",
-  model: openai("gpt-4o-mini"),
-  // memory: undefined // implicit default
+  model: "openai/gpt-4o-mini",
+  // memory omitted (or undefined)
 });
 
 // Disable memory entirely
 const agent2 = new Agent({
   name: "Stateless",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   memory: false,
 });
 
@@ -78,12 +117,50 @@ import { LibSQLMemoryAdapter } from "@voltagent/libsql";
 
 const agent3 = new Agent({
   name: "Persistent",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   memory: new Memory({
     storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/memory.db" }),
   }),
 });
 ```
+
+**`memory` option behavior**
+
+| Value                 | Behavior                                                                |
+| --------------------- | ----------------------------------------------------------------------- |
+| Omitted / `undefined` | Conversation memory is enabled with a built-in `InMemoryStorageAdapter` |
+| `false`               | Conversation memory is disabled                                         |
+| `new Memory({ ... })` | Conversation memory is enabled with your configured adapter             |
+
+For stateless sub-agents, set `memory: false` on each sub-agent explicitly.
+
+### Global Defaults (VoltAgent)
+
+Set default memory instances once at the VoltAgent entrypoint. Defaults apply only when an agent or workflow does not specify `memory`. If nothing is configured, VoltAgent still falls back to built-in in-memory storage. An explicit `memory: false` on an agent disables memory and bypasses defaults.
+
+```ts
+import { Memory, VoltAgent } from "@voltagent/core";
+import { LibSQLMemoryAdapter } from "@voltagent/libsql";
+
+const agentMemory = new Memory({
+  storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/agent.db" }),
+});
+
+const workflowMemory = new Memory({
+  storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/workflows.db" }),
+});
+
+new VoltAgent({
+  agentMemory,
+  workflowMemory,
+  // memory: sharedFallbackMemory,
+});
+```
+
+**Precedence**
+
+- Agents: agent `memory` > `agentMemory` > `memory` > built-in in-memory
+- Workflows: workflow `memory` > `workflowMemory` > `memory` > built-in in-memory
 
 ## Usage with User and Conversation IDs
 
@@ -110,7 +187,6 @@ const response = await agent.generateText("What did we discuss yesterday?", {
 import { Agent, Memory } from "@voltagent/core";
 import { ManagedMemoryAdapter } from "@voltagent/voltagent-memory";
 import { VoltOpsClient } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 const voltOpsClient = new VoltOpsClient({
   publicKey: process.env.VOLTAGENT_PUBLIC_KEY,
@@ -126,7 +202,7 @@ const memory = new Memory({
 
 const agent = new Agent({
   name: "Assistant",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   memory,
 });
 ```
@@ -134,14 +210,13 @@ const agent = new Agent({
 ### Semantic Search + Working Memory
 
 ```ts
-import { Agent, Memory, AiSdkEmbeddingAdapter, InMemoryVectorAdapter } from "@voltagent/core";
+import { Agent, Memory, InMemoryVectorAdapter } from "@voltagent/core";
 import { LibSQLMemoryAdapter } from "@voltagent/libsql";
-import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 
 const memory = new Memory({
   storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/memory.db" }),
-  embedding: new AiSdkEmbeddingAdapter(openai.embedding("text-embedding-3-small")),
+  embedding: "openai/text-embedding-3-small",
   vector: new InMemoryVectorAdapter(),
   workingMemory: {
     enabled: true,
@@ -155,7 +230,7 @@ const memory = new Memory({
 
 const agent = new Agent({
   name: "Smart Assistant",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   memory,
 });
 
@@ -220,7 +295,9 @@ Required methods:
 - Conversations: `createConversation`, `getConversation`, `getConversations`, `getConversationsByUserId`, `queryConversations`, `updateConversation`, `deleteConversation`
 - Conversation steps: `saveConversationSteps`, `getConversationSteps`
 - Working memory: `getWorkingMemory`, `setWorkingMemory`, `deleteWorkingMemory`
-- Workflow state: `getWorkflowState`, `setWorkflowState`, `updateWorkflowState`, `getSuspendedWorkflowStates`
+- Workflow state: `getWorkflowState`, `queryWorkflowRuns`, `setWorkflowState`, `updateWorkflowState`, `getSuspendedWorkflowStates`
+
+Use `queryWorkflowRuns({ workflowId?, status?, from?, to?, limit?, offset? })` for filtered/paginated listings (ordered by newest first).
 
 ### Advanced: Context-Aware Adapters
 

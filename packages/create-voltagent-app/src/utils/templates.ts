@@ -1,5 +1,10 @@
 import path from "node:path";
-import { AI_PROVIDER_CONFIG, type ProjectOptions, type TemplateFile } from "../types";
+import {
+  AI_PROVIDER_CONFIG,
+  type ProjectOptions,
+  SERVER_CONFIG,
+  type TemplateFile,
+} from "../types";
 
 // Determine the correct base path for templates.
 // In the built version, templates are at ../templates relative to dist/
@@ -21,6 +26,8 @@ export const getBaseTemplates = (): TemplateFile[] => {
       transform: (content: string, options: ProjectOptions) => {
         const provider = options.aiProvider || "openai";
         const config = AI_PROVIDER_CONFIG[provider];
+        const server = options.server || "hono";
+        const serverConfig = SERVER_CONFIG[server];
 
         // Always use npm commands
         const pm = {
@@ -46,6 +53,7 @@ export const getBaseTemplates = (): TemplateFile[] => {
           .replace(/{{projectName}}/g, options.projectName)
           .replace(/{{aiProviderName}}/g, config.name)
           .replace(/{{modelName}}/g, config.modelName)
+          .replace(/{{serverName}}/g, serverConfig.name)
           .replace(/{{packageManagerInstall}}/g, pm.install)
           .replace(/{{packageManagerDev}}/g, pm.dev)
           .replace(/{{packageManagerBuild}}/g, pm.build)
@@ -61,34 +69,18 @@ export const getBaseTemplates = (): TemplateFile[] => {
       transform: (content: string, options: ProjectOptions) => {
         const provider = options.aiProvider || "openai";
         const config = AI_PROVIDER_CONFIG[provider];
+        const server = options.server || "hono";
+        const serverConfig = SERVER_CONFIG[server];
 
         // Replace project name
         let result = content.replace(/{{projectName}}/g, options.projectName);
 
-        // Replace import statement
-        result = result.replace('import { openai } from "@ai-sdk/openai";', config.import);
+        result = result
+          .replace(/{{serverPackage}}/g, serverConfig.package)
+          .replace(/{{serverFactory}}/g, serverConfig.factory);
 
-        // Add extra code after imports if needed (for Ollama)
-        if ("extraCode" in config && config.extraCode) {
-          // Find the position after all imports
-          const importRegex = /^import\s+.+from\s+["'].+["'];?\s*$/gm;
-          let lastImportIndex = -1;
-          let match: RegExpExecArray | null;
-
-          match = importRegex.exec(result);
-          while (match !== null) {
-            lastImportIndex = match.index + match[0].length;
-            match = importRegex.exec(result);
-          }
-
-          if (lastImportIndex !== -1) {
-            result =
-              result.slice(0, lastImportIndex) + config.extraCode + result.slice(lastImportIndex);
-          }
-        }
-
-        // Replace model instantiation
-        result = result.replace('openai("gpt-4o-mini")', config.model);
+        // Replace model id
+        result = result.replace(/{{modelId}}/g, config.model);
 
         return result;
       },

@@ -1,5 +1,666 @@
 # @voltagent/server-core
 
+## 2.1.8
+
+### Patch Changes
+
+- [#1089](https://github.com/VoltAgent/voltagent/pull/1089) [`c007b3e`](https://github.com/VoltAgent/voltagent/commit/c007b3e8364113e6ad7261ea40dc6c77590d46f6) Thanks [@chrisisagile](https://github.com/chrisisagile)! - Fix workflow execution request schema to use explicit record key types for Zod v4 compatibility.
+
+- Updated dependencies [[`e15bb6e`](https://github.com/VoltAgent/voltagent/commit/e15bb6e6584e179b1a69925b597557402d957325), [`160e60b`](https://github.com/VoltAgent/voltagent/commit/160e60b29603146211b51a7962ad770202feacb5), [`b610ec6`](https://github.com/VoltAgent/voltagent/commit/b610ec6ae335980e73f8a144e3e8a509e9da8265)]:
+  - @voltagent/core@2.5.0
+
+## 2.1.7
+
+### Patch Changes
+
+- [#1085](https://github.com/VoltAgent/voltagent/pull/1085) [`f275daf`](https://github.com/VoltAgent/voltagent/commit/f275dafffa16e80deba391ce015fba6f6d6cd876) Thanks [@omeraplak](https://github.com/omeraplak)! - Fix workflow execution filtering by persisted metadata across adapters.
+  - Persist `options.metadata` on workflow execution state so `/workflows/executions` filters can match tenant/user metadata.
+  - Preserve existing execution metadata when updating cancelled/error workflow states.
+  - Accept `options.metadata` in server workflow execution request schema.
+  - Fix LibSQL and Cloudflare D1 JSON metadata query comparisons for `metadata` and `metadata.<key>` filters.
+
+- [#1084](https://github.com/VoltAgent/voltagent/pull/1084) [`95ad610`](https://github.com/VoltAgent/voltagent/commit/95ad61091f0f42961b2546457d858e590fd4dfa3) Thanks [@omeraplak](https://github.com/omeraplak)! - Add stream attach support for in-progress workflow executions.
+  - Add `GET /workflows/:id/executions/:executionId/stream` to attach to an active workflow SSE stream.
+  - Add replay support for missed SSE events via `fromSequence` and `Last-Event-ID`.
+  - Keep `POST /workflows/:id/stream` behavior unchanged for starting new executions.
+  - Ensure streamed workflow resume uses a fresh suspend controller so attach clients continue receiving events after resume.
+
+- Updated dependencies [[`f275daf`](https://github.com/VoltAgent/voltagent/commit/f275dafffa16e80deba391ce015fba6f6d6cd876), [`95ad610`](https://github.com/VoltAgent/voltagent/commit/95ad61091f0f42961b2546457d858e590fd4dfa3)]:
+  - @voltagent/core@2.4.4
+
+## 2.1.6
+
+### Patch Changes
+
+- [#1059](https://github.com/VoltAgent/voltagent/pull/1059) [`ec82442`](https://github.com/VoltAgent/voltagent/commit/ec824427858858fa63c8cfeb3b911f943c23ce71) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add persisted feedback-provided markers for message feedback metadata
+  - `AgentFeedbackMetadata` now supports `provided`, `providedAt`, and `feedbackId`.
+  - Added `Agent.isFeedbackProvided(...)` and `Agent.isMessageFeedbackProvided(...)` helpers.
+  - Added `agent.markFeedbackProvided(...)` to persist a feedback-submitted marker on a stored message so feedback UI can stay hidden after memory reloads.
+  - Added `result.feedback.markFeedbackProvided(...)` and `result.feedback.isProvided()` helper methods for SDK usage.
+  - Updated server response schema to include the new feedback metadata fields.
+
+  ```ts
+  const result = await agent.generateText("How was this answer?", {
+    userId: "user-1",
+    conversationId: "conv-1",
+    feedback: true,
+  });
+
+  if (result.feedback && !result.feedback.isProvided()) {
+    // call after your feedback ingestion succeeds
+    await result.feedback.markFeedbackProvided({
+      feedbackId: "fb_123", // optional
+    });
+  }
+  ```
+
+- Updated dependencies [[`b0482cb`](https://github.com/VoltAgent/voltagent/commit/b0482cb16e3c2aff786581a1291737f772e1d19d), [`f36545c`](https://github.com/VoltAgent/voltagent/commit/f36545c63727e1ae4e52b991e7080747e2988ccc), [`ec82442`](https://github.com/VoltAgent/voltagent/commit/ec824427858858fa63c8cfeb3b911f943c23ce71), [`b0482cb`](https://github.com/VoltAgent/voltagent/commit/b0482cb16e3c2aff786581a1291737f772e1d19d), [`b0482cb`](https://github.com/VoltAgent/voltagent/commit/b0482cb16e3c2aff786581a1291737f772e1d19d), [`9e5ef29`](https://github.com/VoltAgent/voltagent/commit/9e5ef29adbf8f710ce2a55910e781163c56ed8d2)]:
+  - @voltagent/core@2.4.1
+
+## 2.1.5
+
+### Patch Changes
+
+- [#1040](https://github.com/VoltAgent/voltagent/pull/1040) [`5e54d3b`](https://github.com/VoltAgent/voltagent/commit/5e54d3b54e2823479788617ce0a1bb5211260f9b) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add multi-tenant filters to workflow execution listing (`/workflows/executions`)
+
+  You can now filter workflow execution history by `userId` and metadata fields in addition to
+  existing filters (`workflowId`, `status`, `from`, `to`, `limit`, `offset`).
+
+  ### What's New
+  - Added `userId` filter support for workflow run queries.
+  - Added metadata filtering support:
+    - `metadata` as URL-encoded JSON object
+    - `metadata.<key>` query params (for example: `metadata.tenantId=acme`)
+  - Added status aliases for compatibility:
+    - `success` -> `completed`
+    - `pending` -> `running`
+  - Implemented consistently across storage adapters:
+    - In-memory
+    - PostgreSQL
+    - LibSQL
+    - Supabase
+    - Cloudflare D1
+    - Managed Memory (`@voltagent/voltagent-memory`)
+  - Updated server docs and route descriptions to include new filters.
+
+  ### TypeScript Example
+
+  ```ts
+  const params = new URLSearchParams({
+    workflowId: "order-approval",
+    status: "completed",
+    userId: "user-123",
+    "metadata.tenantId": "acme",
+    "metadata.region": "eu",
+    limit: "20",
+    offset: "0",
+  });
+
+  const response = await fetch(`http://localhost:3141/workflows/executions?${params.toString()}`);
+  const data = await response.json();
+  ```
+
+  ### cURL Examples
+
+  ```bash
+  # Filter by workflow + user + metadata key
+  curl "http://localhost:3141/workflows/executions?workflowId=order-approval&userId=user-123&metadata.tenantId=acme&status=completed&limit=20&offset=0"
+  ```
+
+  ```bash
+  # Filter by metadata JSON object (URL-encoded)
+  curl "http://localhost:3141/workflows/executions?metadata=%7B%22tenantId%22%3A%22acme%22%2C%22region%22%3A%22eu%22%7D"
+  ```
+
+- Updated dependencies [[`5e54d3b`](https://github.com/VoltAgent/voltagent/commit/5e54d3b54e2823479788617ce0a1bb5211260f9b)]:
+  - @voltagent/core@2.3.7
+
+## 2.1.4
+
+### Patch Changes
+
+- [#1025](https://github.com/VoltAgent/voltagent/pull/1025) [`c783943`](https://github.com/VoltAgent/voltagent/commit/c783943fa165734fcadabbd0c6ce12212b3a5969) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: introduce experimental Workspace support with filesystem, sandbox execution, search indexing, and skill discovery; add global workspace defaults and optional sandbox providers (E2B/Daytona). - #1008
+
+  Example:
+
+  ```ts
+  import { Agent, Workspace, LocalSandbox, NodeFilesystemBackend } from "@voltagent/core";
+
+  const workspace = new Workspace({
+    id: "support-workspace",
+    operationTimeoutMs: 30_000,
+    filesystem: {
+      backend: new NodeFilesystemBackend({
+        rootDir: "./.workspace",
+      }),
+    },
+    sandbox: new LocalSandbox({
+      rootDir: "./.sandbox",
+      isolation: { provider: "detect" },
+      cleanupOnDestroy: true,
+    }),
+    search: {
+      autoIndexPaths: ["/notes", "/tickets"],
+    },
+    skills: {
+      rootPaths: ["/skills"],
+    },
+  });
+
+  const agent = new Agent({
+    name: "support-agent",
+    model,
+    instructions: "Use workspace tools to review tickets and summarize findings.",
+    workspace,
+    workspaceToolkits: {
+      filesystem: {
+        toolPolicies: {
+          tools: { write_file: { needsApproval: true } },
+        },
+      },
+    },
+  });
+
+  const { text } = await agent.generateText(
+    [
+      "Scan /tickets and /notes.",
+      "Use workspace_search to find urgent issues from the last week.",
+      "Summarize the top 3 risks and include file paths as citations.",
+    ].join("\n"),
+    { maxSteps: 40 }
+  );
+  ```
+
+- Updated dependencies [[`c783943`](https://github.com/VoltAgent/voltagent/commit/c783943fa165734fcadabbd0c6ce12212b3a5969)]:
+  - @voltagent/core@2.3.5
+
+## 2.1.3
+
+### Patch Changes
+
+- [#974](https://github.com/VoltAgent/voltagent/pull/974) [`a5bc28d`](https://github.com/VoltAgent/voltagent/commit/a5bc28deed4f4a92c020d3f1dace8422a5c66111) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add memory HTTP endpoints for conversations, messages, working memory, and search across server-core, Hono, Elysia, and serverless runtimes.
+
+  ### Endpoints
+  - `GET /api/memory/conversations`
+  - `POST /api/memory/conversations`
+  - `GET /api/memory/conversations/:conversationId`
+  - `PATCH /api/memory/conversations/:conversationId`
+  - `DELETE /api/memory/conversations/:conversationId`
+  - `POST /api/memory/conversations/:conversationId/clone`
+  - `GET /api/memory/conversations/:conversationId/messages`
+  - `GET /api/memory/conversations/:conversationId/working-memory`
+  - `POST /api/memory/conversations/:conversationId/working-memory`
+  - `POST /api/memory/save-messages`
+  - `POST /api/memory/messages/delete`
+  - `GET /api/memory/search`
+
+  Note: include `agentId` (query/body) when multiple agents are registered or no global memory is configured.
+
+  ### Examples
+
+  Create a conversation:
+
+  ```bash
+  curl -X POST http://localhost:3141/api/memory/conversations \
+    -H "Content-Type: application/json" \
+    -d '{
+      "userId": "user-123",
+      "resourceId": "assistant",
+      "title": "Support Chat",
+      "metadata": { "channel": "web" }
+    }'
+  ```
+
+  Save messages into the conversation:
+
+  ```bash
+  curl -X POST http://localhost:3141/api/memory/save-messages \
+    -H "Content-Type: application/json" \
+    -d '{
+      "userId": "user-123",
+      "conversationId": "conv-001",
+      "messages": [
+        { "role": "user", "content": "Hi there" },
+        { "role": "assistant", "content": "Hello!" }
+      ]
+    }'
+  ```
+
+  Update working memory (append mode):
+
+  ```bash
+  curl -X POST http://localhost:3141/api/memory/conversations/conv-001/working-memory \
+    -H "Content-Type: application/json" \
+    -d '{
+      "content": "Customer prefers email follow-ups.",
+      "mode": "append"
+    }'
+  ```
+
+  Search memory (requires embedding + vector adapters):
+
+  ```bash
+  curl "http://localhost:3141/api/memory/search?searchQuery=refund%20policy&limit=5"
+  ```
+
+- Updated dependencies [[`9221498`](https://github.com/VoltAgent/voltagent/commit/9221498c71eb77759380d17e50521abfd213a64c)]:
+  - @voltagent/core@2.1.6
+
+## 2.1.2
+
+### Patch Changes
+
+- [#921](https://github.com/VoltAgent/voltagent/pull/921) [`c4591fa`](https://github.com/VoltAgent/voltagent/commit/c4591fa92de6df75a22a758b0232669053bd2b62) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add resumable streaming support via @voltagent/resumable-streams, with server adapters that let clients reconnect to in-flight streams.
+
+  ```ts
+  import { openai } from "@ai-sdk/openai";
+  import { Agent, VoltAgent } from "@voltagent/core";
+  import {
+    createResumableStreamAdapter,
+    createResumableStreamRedisStore,
+  } from "@voltagent/resumable-streams";
+  import { honoServer } from "@voltagent/server-hono";
+
+  const streamStore = await createResumableStreamRedisStore();
+  const resumableStream = await createResumableStreamAdapter({ streamStore });
+
+  const agent = new Agent({
+    id: "assistant",
+    name: "Resumable Stream Agent",
+    instructions: "You are a helpful assistant.",
+    model: openai("gpt-4o-mini"),
+  });
+
+  new VoltAgent({
+    agents: { assistant: agent },
+    server: honoServer({
+      resumableStream: { adapter: resumableStream },
+    }),
+  });
+
+  await fetch("http://localhost:3141/agents/assistant/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: `{"input":"Hello!","options":{"conversationId":"conv-1","userId":"user-1","resumableStream":true}}`,
+  });
+
+  // Resume the same stream after reconnect/refresh
+  const resumeResponse = await fetch(
+    "http://localhost:3141/agents/assistant/chat/conv-1/stream?userId=user-1"
+  );
+
+  const reader = resumeResponse.body?.getReader();
+  const decoder = new TextDecoder();
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    console.log(chunk);
+  }
+  ```
+
+  AI SDK client (resume on refresh):
+
+  ```tsx
+  import { useChat } from "@ai-sdk/react";
+  import { DefaultChatTransport } from "ai";
+
+  const { messages, sendMessage } = useChat({
+    id: chatId,
+    messages: initialMessages,
+    resume: true,
+    transport: new DefaultChatTransport({
+      api: "/api/chat",
+      prepareSendMessagesRequest: ({ id, messages }) => ({
+        body: {
+          message: messages[messages.length - 1],
+          options: { conversationId: id, userId },
+        },
+      }),
+      prepareReconnectToStreamRequest: ({ id }) => ({
+        api: `/api/chat/${id}/stream?userId=${encodeURIComponent(userId)}`,
+      }),
+    }),
+  });
+  ```
+
+- Updated dependencies [[`c4591fa`](https://github.com/VoltAgent/voltagent/commit/c4591fa92de6df75a22a758b0232669053bd2b62)]:
+  - @voltagent/core@2.0.7
+
+## 2.1.1
+
+### Patch Changes
+
+- [#911](https://github.com/VoltAgent/voltagent/pull/911) [`975831a`](https://github.com/VoltAgent/voltagent/commit/975831a852ea471adb621a1d87990a8ffbc5ed31) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: expose Cloudflare Workers `env` bindings in serverless contexts
+
+  When using `@voltagent/serverless-hono` on Cloudflare Workers, the runtime `env` is now injected into the
+  context map for agent requests, workflow runs, and tool executions. `@voltagent/core` exports
+  `SERVERLESS_ENV_CONTEXT_KEY` so you can access bindings like D1 from `options.context` (tools) or
+  `state.context` (workflow steps). Tool execution also accepts `context` as a `Map`, preserving
+  `userId`/`conversationId` when provided that way.
+
+  `@voltagent/core` is also marked as side-effect free so edge bundlers can tree-shake the PlanAgent
+  filesystem backend, avoiding Node-only dependency loading when it is not used.
+
+  Usage:
+
+  ```ts
+  import { createTool, SERVERLESS_ENV_CONTEXT_KEY } from "@voltagent/core";
+  import type { D1Database } from "@cloudflare/workers-types";
+  import { z } from "zod";
+
+  type Env = { DB: D1Database };
+
+  export const listUsers = createTool({
+    name: "list-users",
+    description: "Fetch users from D1",
+    parameters: z.object({}),
+    execute: async (_args, options) => {
+      const env = options?.context?.get(SERVERLESS_ENV_CONTEXT_KEY) as Env | undefined;
+      const db = env?.DB;
+      if (!db) {
+        throw new Error("D1 binding is missing (env.DB)");
+      }
+
+      const { results } = await db.prepare("SELECT id, name FROM users").all();
+      return results;
+    },
+  });
+  ```
+
+- Updated dependencies [[`975831a`](https://github.com/VoltAgent/voltagent/commit/975831a852ea471adb621a1d87990a8ffbc5ed31)]:
+  - @voltagent/core@2.0.4
+
+## 2.1.0
+
+### Minor Changes
+
+- [#898](https://github.com/VoltAgent/voltagent/pull/898) [`b322cf4`](https://github.com/VoltAgent/voltagent/commit/b322cf4c511c64872c178e51f9ddccb869385dee) Thanks [@MGrin](https://github.com/MGrin)! - feat: Initial release of @voltagent/server-elysia
+
+  # @voltagent/server-elysia
+
+  ## 1.0.0
+
+  ### Major Changes
+  - Initial release of Elysia server implementation for VoltAgent
+  - Full feature parity with server-hono including:
+    - Agent execution endpoints (text, stream, chat, object)
+    - Workflow execution and lifecycle management
+    - Tool execution and discovery
+    - MCP (Model Context Protocol) support
+    - A2A (Agent-to-Agent) communication
+    - Observability and tracing
+    - Logging endpoints
+    - Authentication with authNext support
+    - Custom endpoint configuration
+    - CORS configuration
+    - WebSocket support
+
+  ### Features
+  - **High Performance**: Built on Elysia, optimized for speed and low latency
+  - **Type Safety**: Full TypeScript support with strict typing
+  - **Flexible Configuration**: Support for both `configureApp` and `configureFullApp` patterns
+  - **Auth Support**: JWT authentication with public route configuration via `authNext`
+  - **Extensible**: Easy to add custom routes, middleware, and plugins
+  - **OpenAPI/Swagger**: Built-in API documentation via @elysiajs/swagger
+  - **MCP Support**: Full Model Context Protocol implementation with SSE streaming
+  - **WebSocket Support**: Real-time updates and streaming capabilities
+
+  ### Dependencies
+  - `@voltagent/core`: ^1.5.1
+  - `@voltagent/server-core`: ^1.0.36
+  - `@voltagent/mcp-server`: ^1.0.3
+  - `@voltagent/a2a-server`: ^1.0.2
+  - `elysia`: ^1.1.29
+
+  ### Peer Dependencies
+  - `@voltagent/core`: ^1.x
+  - `elysia`: ^1.x
+
+## 2.0.2
+
+### Patch Changes
+
+- [`f6ffb8a`](https://github.com/VoltAgent/voltagent/commit/f6ffb8ae0fd95fbe920058e707d492d8c21b2505) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: VoltAgent 2.x (AI SDK v6)
+
+  VoltAgent 2.x aligns the framework with AI SDK v6 and adds new features. VoltAgent APIs are compatible, but if you call AI SDK directly, follow the upstream v6 migration guide.
+
+  Migration summary (1.x -> 2.x):
+  1. Update VoltAgent packages
+  - `npm run volt update`
+  - If the CLI is missing: `npx @voltagent/cli init` then `npm run volt update`
+  2. Align AI SDK packages
+  - `pnpm add ai@^6 @ai-sdk/provider@^3 @ai-sdk/provider-utils@^4 @ai-sdk/openai@^3`
+  - If you use UI hooks, upgrade `@ai-sdk/react` to `^3`
+  3. Structured output
+  - `generateObject` and `streamObject` are deprecated in VoltAgent 2.x
+  - Use `generateText` / `streamText` with `Output.object(...)`
+
+  Full migration guide: https://voltagent.dev/docs/getting-started/migration-guide/
+
+- Updated dependencies [[`f6ffb8a`](https://github.com/VoltAgent/voltagent/commit/f6ffb8ae0fd95fbe920058e707d492d8c21b2505)]:
+  - @voltagent/core@2.0.2
+  - @voltagent/internal@1.0.2
+
+## 2.0.1
+
+### Patch Changes
+
+- [`c3943aa`](https://github.com/VoltAgent/voltagent/commit/c3943aa89a7bee113d99404ecd5a81a62bc159c2) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: VoltAgent 2.x (AI SDK v6)
+
+  VoltAgent 2.x aligns the framework with AI SDK v6 and adds new features. VoltAgent APIs are compatible, but if you call AI SDK directly, follow the upstream v6 migration guide.
+
+  Migration summary (1.x -> 2.x):
+  1. Update VoltAgent packages
+  - `npm run volt update`
+  - If the CLI is missing: `npx @voltagent/cli init` then `npm run volt update`
+  2. Align AI SDK packages
+  - `pnpm add ai@^6 @ai-sdk/provider@^3 @ai-sdk/provider-utils@^4 @ai-sdk/openai@^3`
+  - If you use UI hooks, upgrade `@ai-sdk/react` to `^3`
+  3. Structured output
+  - `generateObject` and `streamObject` are deprecated in VoltAgent 2.x
+  - Use `generateText` / `streamText` with `Output.object(...)`
+
+  Full migration guide: https://voltagent.dev/docs/getting-started/migration-guide/
+
+- Updated dependencies [[`c3943aa`](https://github.com/VoltAgent/voltagent/commit/c3943aa89a7bee113d99404ecd5a81a62bc159c2)]:
+  - @voltagent/core@2.0.1
+  - @voltagent/internal@1.0.1
+
+## 2.0.0
+
+### Major Changes
+
+- [#894](https://github.com/VoltAgent/voltagent/pull/894) [`ee05549`](https://github.com/VoltAgent/voltagent/commit/ee055498096b1b99015a8362903712663969677f) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: VoltAgent 2.x (AI SDK v6)
+
+  VoltAgent 2.x aligns the framework with AI SDK v6 and adds new features. VoltAgent APIs are compatible, but if you call AI SDK directly, follow the upstream v6 migration guide.
+
+  Migration summary (1.x -> 2.x):
+  1. Update VoltAgent packages
+  - `npm run volt update`
+  - If the CLI is missing: `npx @voltagent/cli init` then `npm run volt update`
+  2. Align AI SDK packages
+  - `pnpm add ai@^6 @ai-sdk/provider@^3 @ai-sdk/provider-utils@^4 @ai-sdk/openai@^3`
+  - If you use UI hooks, upgrade `@ai-sdk/react` to `^3`
+  3. Structured output
+  - `generateObject` and `streamObject` are deprecated in VoltAgent 2.x
+  - Use `generateText` / `streamText` with `Output.object(...)`
+
+  Full migration guide: https://voltagent.dev/docs/getting-started/migration-guide/
+
+### Patch Changes
+
+- Updated dependencies [[`ee05549`](https://github.com/VoltAgent/voltagent/commit/ee055498096b1b99015a8362903712663969677f)]:
+  - @voltagent/core@2.0.0
+  - @voltagent/internal@1.0.0
+
+## 1.0.36
+
+### Patch Changes
+
+- [#883](https://github.com/VoltAgent/voltagent/pull/883) [`9320326`](https://github.com/VoltAgent/voltagent/commit/93203262bf3ebcbc38fe4663c4b0cea27dd9ea16) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add authNext and deprecate legacy auth
+
+  Add a new `authNext` policy that splits routes into public, console, and user access. All routes are protected by default; use `publicRoutes` to opt out.
+
+  AuthNext example:
+
+  ```ts
+  import { jwtAuth } from "@voltagent/server-core";
+  import { honoServer } from "@voltagent/server-hono";
+
+  const server = honoServer({
+    authNext: {
+      provider: jwtAuth({ secret: process.env.JWT_SECRET! }),
+      publicRoutes: ["GET /health"],
+    },
+  });
+  ```
+
+  Behavior summary:
+  - When `authNext` is set, all routes are private by default.
+  - Console endpoints (agents, workflows, tools, docs, observability, updates) require a Console Access Key.
+  - Execution endpoints require a user token (JWT).
+
+  Console access uses `VOLTAGENT_CONSOLE_ACCESS_KEY`:
+
+  ```bash
+  VOLTAGENT_CONSOLE_ACCESS_KEY=your-console-key
+  ```
+
+  ```bash
+  curl http://localhost:3141/agents \
+    -H "x-console-access-key: your-console-key"
+  ```
+
+  Legacy `auth` remains supported but is deprecated. Use `authNext` for new integrations.
+
+## 1.0.35
+
+### Patch Changes
+
+- [`b663dce`](https://github.com/VoltAgent/voltagent/commit/b663dceb57542d1b85475777f32ceb3671cc1237) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: dedupe MCP endpoints in server startup output and include MCP transport paths (streamable HTTP/SSE) so the actual server endpoint is visible.
+
+- Updated dependencies [[`b663dce`](https://github.com/VoltAgent/voltagent/commit/b663dceb57542d1b85475777f32ceb3671cc1237)]:
+  - @voltagent/core@1.5.1
+
+## 1.0.34
+
+### Patch Changes
+
+- [#865](https://github.com/VoltAgent/voltagent/pull/865) [`77833b8`](https://github.com/VoltAgent/voltagent/commit/77833b848fbb1ae99e79c955e25442f9ebdd162f) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: make GET /tools endpoint public when auth is enabled
+
+  Previously, `GET /tools` was listed in `PROTECTED_ROUTES`, requiring authentication even though it only returns tool metadata (name, description, parameters). This was inconsistent with `GET /agents` and `GET /workflows` which are publicly accessible for discovery.
+
+  ## Changes
+  - Moved `GET /tools` from `PROTECTED_ROUTES` to `DEFAULT_PUBLIC_ROUTES`
+  - Tool execution (`POST /tools/:name/execute`) remains protected and requires authentication
+
+  This allows VoltOps Console and other clients to discover available tools without authentication, while still requiring auth to actually execute them.
+
+## 1.0.33
+
+### Patch Changes
+
+- [#847](https://github.com/VoltAgent/voltagent/pull/847) [`d861c17`](https://github.com/VoltAgent/voltagent/commit/d861c17e72f2fb6368778970a56411fadabaf9a5) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add first-class REST tool endpoints and UI support - #638
+  - Server: list and execute registered tools over HTTP (`GET /tools`, `POST /tools/:name/execute`) with zod-validated inputs and OpenAPI docs.
+  - Auth: Both GET and POST tool endpoints are behind the same auth middleware as agent/workflow execution (protected by default).
+  - Multi-agent tools: tools now report all owning agents via `agents[]` (no more single `agentId`), including tags when provided.
+  - Safer handlers: input validation via safeParse guard, tag extraction without `any`, and better error shaping.
+  - Serverless: update install route handles empty bodies and `/updates/:packageName` variant.
+  - Console: Unified list surfaces tools, tool tester drawer with Monaco editors and default context, Observability page adds a Tools tab with direct execution.
+  - Docs: New tools endpoint page and API reference entries for listing/executing tools.
+
+## 1.0.32
+
+### Patch Changes
+
+- [#845](https://github.com/VoltAgent/voltagent/pull/845) [`5432f13`](https://github.com/VoltAgent/voltagent/commit/5432f13bddebd869522ebffbedd9843b4476f08b) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: workflow execution listing - #844
+
+  Added a unified way to list workflow runs so teams can audit executions across every storage backend and surface them via the API and console.
+
+  ## What changed
+  - `queryWorkflowRuns` now exists on all memory adapters (in-memory, libsql, Postgres, Supabase, voltagent-memory) with filters for `workflowId`, `status`, `from`, `to`, `limit`, and `offset`.
+  - Server routes are consolidated under `/workflows/executions` (no path param needed); `GET /workflows/:id` also returns the workflow result schema for typed clients. Handler naming is standardized to `listWorkflowRuns`.
+  - VoltOps Console observability panel lists the new endpoint; REST docs updated with query params and sample responses. New unit tests cover handlers and every storage adapter.
+
+  ## Quick fetch
+
+  ```ts
+  await fetch(
+    "http://localhost:3141/workflows/executions?workflowId=expense-approval&status=completed&from=2024-01-01&to=2024-01-31&limit=20&offset=0"
+  );
+  ```
+
+- Updated dependencies [[`5432f13`](https://github.com/VoltAgent/voltagent/commit/5432f13bddebd869522ebffbedd9843b4476f08b)]:
+  - @voltagent/core@1.2.17
+
+## 1.0.31
+
+### Patch Changes
+
+- [`d3e0995`](https://github.com/VoltAgent/voltagent/commit/d3e09950fb8708db8beb9db2f1b8eafbe47686ea) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add CLI announcements system for server startup
+
+  VoltAgent server now displays announcements during startup, keeping developers informed about new features and updates.
+
+  ## How It Works
+
+  When the server starts, it fetches announcements from a centralized GitHub-hosted JSON file and displays them in a minimal, non-intrusive format:
+
+  ```
+    ⚡ Introducing VoltOps Deployments → https://console.voltagent.dev/deployments
+  ```
+
+  ## Key Features
+  - **Dynamic updates**: Announcements are fetched from GitHub at runtime, so new announcements appear without requiring a package update
+  - **Non-blocking**: Uses a 3-second timeout and fails silently to never delay server startup
+  - **Minimal footprint**: Single-line format inspired by Next.js, doesn't clutter the console
+  - **Toggle support**: Each announcement has an `enabled` flag for easy control
+
+  ## Technical Details
+  - Announcements source: `https://raw.githubusercontent.com/VoltAgent/voltagent/main/announcements.json`
+  - New `showAnnouncements()` function exported from `@voltagent/server-core`
+  - Integrated into both `BaseServerProvider` and `HonoServerProvider` startup flow
+
+## 1.0.30
+
+### Patch Changes
+
+- [#840](https://github.com/VoltAgent/voltagent/pull/840) [`9e88658`](https://github.com/VoltAgent/voltagent/commit/9e88658c2c26aff972bdd2da6e7ac2e34958c47d) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: webSocket authentication now uses same logic as HTTP routes
+
+  ## The Problem
+
+  WebSocket endpoints were using a different authentication logic than HTTP endpoints:
+  - HTTP routes used `requiresAuth()` function which respects `publicRoutes`, `DEFAULT_PUBLIC_ROUTES`, `PROTECTED_ROUTES`, and `defaultPrivate` configuration
+  - WebSocket routes only checked for console access key or JWT token, ignoring the `publicRoutes` configuration entirely
+
+  This meant that setting `publicRoutes: ["/ws/**"]` in your auth configuration had no effect on WebSocket connections.
+
+  ## The Solution
+
+  Updated `setupWebSocketUpgrade` in `packages/server-core/src/websocket/setup.ts` to:
+  1. Check console access first (console always has access via `VOLTAGENT_CONSOLE_ACCESS_KEY`)
+  2. Use the same `requiresAuth()` function that HTTP routes use
+  3. Respect `publicRoutes`, `PROTECTED_ROUTES`, and `defaultPrivate` configuration
+
+  ## Impact
+  - **Consistent auth behavior:** WebSocket and HTTP routes now follow the same authentication rules
+  - **publicRoutes works for WebSocket:** You can now make WebSocket paths public using the `publicRoutes` configuration
+  - **Console access preserved:** Console with `VOLTAGENT_CONSOLE_ACCESS_KEY` continues to work on all WebSocket paths
+
+  ## Example
+
+  ```typescript
+  const server = new VoltAgent({
+    auth: {
+      defaultPrivate: true,
+      publicRoutes: ["/ws/public/**"], // Now works for WebSocket too!
+    },
+  });
+  ```
+
+- Updated dependencies [[`93e5a8e`](https://github.com/VoltAgent/voltagent/commit/93e5a8ed03d2335d845436752b476881c24931ba)]:
+  - @voltagent/core@1.2.16
+
 ## 1.0.29
 
 ### Patch Changes

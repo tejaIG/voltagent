@@ -1,4 +1,4 @@
-import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import type { ProviderOptions, ToolNeedsApprovalFunction } from "@ai-sdk/provider-utils";
 import type { Tool as VercelTool } from "ai";
 import type { z } from "zod";
 import type { BaseTool, ToolExecuteOptions, ToolSchema } from "../agent/providers/base/types";
@@ -8,6 +8,38 @@ import { LoggerProxy } from "../logger";
  * JSON value types (matches AI SDK's JSONValue)
  */
 type JSONValue = string | number | boolean | null | { [key: string]: JSONValue } | Array<JSONValue>;
+
+export type ToolExecutionResult<T> = PromiseLike<T> | AsyncIterable<T> | T;
+
+export interface ToolHookOnStartArgs {
+  tool: Tool<any, any>;
+  args: unknown;
+  options?: ToolExecuteOptions;
+}
+
+export interface ToolHookOnEndArgs {
+  tool: Tool<any, any>;
+  args: unknown;
+  /** The successful output from the tool. Undefined on error. */
+  output: unknown | undefined;
+  /** The error if the tool execution failed. */
+  error: unknown | undefined;
+  options?: ToolExecuteOptions;
+}
+
+export interface ToolHookOnEndResult {
+  output?: unknown;
+}
+
+export type ToolHookOnStart = (args: ToolHookOnStartArgs) => Promise<void> | void;
+export type ToolHookOnEnd = (
+  args: ToolHookOnEndArgs,
+) => Promise<ToolHookOnEndResult | undefined> | Promise<void> | ToolHookOnEndResult | undefined;
+
+export type ToolHooks = {
+  onStart?: ToolHookOnStart;
+  onEnd?: ToolHookOnEnd;
+};
 
 /**
  * Tool result output format for multi-modal content.
@@ -32,6 +64,19 @@ export type { ProviderOptions } from "@ai-sdk/provider-utils";
 export { ToolManager, ToolStatus, ToolStatusInfo } from "./manager";
 // Export Toolkit type and createToolkit function
 export { type Toolkit, createToolkit } from "./toolkit";
+// Export tool routing helpers
+export { createEmbeddingToolSearchStrategy } from "./routing";
+export type {
+  ToolSearchCandidate,
+  ToolSearchContext,
+  ToolSearchResult,
+  ToolSearchResultItem,
+  ToolSearchSelection,
+  ToolSearchStrategy,
+  ToolRoutingConfig,
+  ToolRoutingEmbeddingConfig,
+  ToolRoutingEmbeddingInput,
+} from "./routing/types";
 
 /**
  * Tool definition compatible with Vercel AI SDK
@@ -41,7 +86,13 @@ export type AgentTool = BaseTool;
 /**
  * Block access to user-defined and dynamic tools by requiring provider-defined type
  * */
-export type ProviderTool = Extract<VercelTool, { type: "provider-defined" }>;
+export type ProviderTool = VercelTool & {
+  type: "provider";
+  id: `${string}.${string}`;
+  args: Record<string, unknown>;
+  supportsDeferredResults?: boolean;
+  name: string;
+};
 
 /**
  * Tool options for creating a new tool
@@ -81,6 +132,12 @@ export type ToolOptions<
   tags?: string[];
 
   /**
+   * Whether the tool requires approval before execution.
+   * When set to a function, it can decide dynamically per call.
+   */
+  needsApproval?: boolean | ToolNeedsApprovalFunction<z.infer<T>>;
+
+  /**
    * Provider-specific options for the tool.
    * Enables provider-specific functionality like cache control.
    *
@@ -105,26 +162,34 @@ export type ToolOptions<
    * @example
    * ```typescript
    * // Return image + text
-   * toModelOutput: (result) => ({
+   * toModelOutput: ({ output }) => ({
    *   type: 'content',
    *   value: [
    *     { type: 'text', text: 'Screenshot taken' },
-   *     { type: 'media', data: result.base64Image, mediaType: 'image/png' }
+   *     { type: 'media', data: output.base64Image, mediaType: 'image/png' }
    *   ]
    * })
    * ```
    */
-  toModelOutput?: (output: O extends ToolSchema ? z.infer<O> : unknown) => ToolResultOutput;
+  toModelOutput?: (args: {
+    output: O extends ToolSchema ? z.infer<O> : unknown;
+  }) => ToolResultOutput;
 
   /**
    * Function to execute when the tool is called.
    * @param args - The arguments passed to the tool
    * @param options - Optional execution options including context, abort signals, etc.
+   * @returns A result or an AsyncIterable of results (last value is final).
    */
   execute?: (
     args: z.infer<T>,
     options?: ToolExecuteOptions,
-  ) => Promise<O extends ToolSchema ? z.infer<O> : unknown>;
+  ) => ToolExecutionResult<O extends ToolSchema ? z.infer<O> : unknown>;
+
+  /**
+   * Optional tool-specific hooks for lifecycle events.
+   */
+  hooks?: ToolHooks;
 };
 
 /**
@@ -163,6 +228,11 @@ export class Tool<T extends ToolSchema = ToolSchema, O extends ToolSchema | unde
   readonly tags?: string[];
 
   /**
+   * Whether the tool requires approval before execution.
+   */
+  readonly needsApproval?: boolean | ToolNeedsApprovalFunction<z.infer<T>>;
+
+  /**
    * Provider-specific options for the tool.
    * Enables provider-specific functionality like cache control.
    */
@@ -172,9 +242,14 @@ export class Tool<T extends ToolSchema = ToolSchema, O extends ToolSchema | unde
    * Optional function to convert tool output to multi-modal content.
    * Enables returning images, media, or structured content to the LLM.
    */
-  readonly toModelOutput?: (
-    output: O extends ToolSchema ? z.infer<O> : unknown,
-  ) => ToolResultOutput;
+  readonly toModelOutput?: (args: {
+    output: O extends ToolSchema ? z.infer<O> : unknown;
+  }) => ToolResultOutput;
+
+  /**
+   * Optional tool-specific hooks for lifecycle events.
+   */
+  readonly hooks?: ToolHooks;
 
   /**
    * Internal discriminator to make runtime/type checks simpler across module boundaries.
@@ -186,11 +261,12 @@ export class Tool<T extends ToolSchema = ToolSchema, O extends ToolSchema | unde
    * Function to execute when the tool is called.
    * @param args - The arguments passed to the tool
    * @param options - Optional execution options including context, abort signals, etc.
+   * @returns A result or an AsyncIterable of results (last value is final).
    */
   readonly execute?: (
     args: z.infer<T>,
     options?: ToolExecuteOptions,
-  ) => Promise<O extends ToolSchema ? z.infer<O> : unknown>;
+  ) => ToolExecutionResult<O extends ToolSchema ? z.infer<O> : unknown>;
 
   /**
    * Whether this tool should be executed on the client side.
@@ -221,9 +297,11 @@ export class Tool<T extends ToolSchema = ToolSchema, O extends ToolSchema | unde
     this.parameters = options.parameters;
     this.outputSchema = options.outputSchema;
     this.tags = options.tags;
+    this.needsApproval = options.needsApproval;
     this.providerOptions = options.providerOptions;
     this.toModelOutput = options.toModelOutput;
     this.execute = options.execute;
+    this.hooks = options.hooks;
   }
 }
 

@@ -46,6 +46,91 @@ Each tool has:
 
 The `execute` function's parameter types are automatically inferred from the Zod schema, providing full IntelliSense support.
 
+## Tool Hooks
+
+You can attach tool-specific hooks to observe or post-process a tool result. Tool hooks run before agent-level hooks, and agent `onToolEnd` can still override the output afterward.
+
+**Hook parameters:**
+
+- `onStart`: `{ tool, args, options }`
+- `onEnd`: `{ tool, args, output, error, options }` (return `{ output }` to override the result)
+
+> Overrides are re-validated if the tool has an `outputSchema`. For streaming tools (AsyncIterable), overrides apply only to the final output.
+
+```ts
+import { createTool } from "@voltagent/core";
+import { z } from "zod";
+
+const summarizeTool = createTool({
+  name: "summarize_text",
+  description: "Summarize text with a hard cap",
+  parameters: z.object({ text: z.string() }),
+  execute: async ({ text }) => text,
+  hooks: {
+    onStart: ({ tool }) => {
+      console.log(`[tool] ${tool.name} starting`);
+    },
+    onEnd: ({ output }) => {
+      if (typeof output === "string") {
+        return { output: output.slice(0, 500) };
+      }
+    },
+  },
+});
+```
+
+## Streaming Tool Results (Preliminary)
+
+If your tool can provide progress or intermediate status, return an `AsyncIterable` from `execute`.
+Each `yield` is emitted as a preliminary tool result, and the **last yielded value** is treated as the final result.
+
+```ts
+import { createTool } from "@voltagent/core";
+import { z } from "zod";
+
+const weatherOutputSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("loading"),
+    text: z.string(),
+    weather: z.undefined().optional(),
+  }),
+  z.object({
+    status: z.literal("success"),
+    text: z.string(),
+    weather: z.object({
+      location: z.string(),
+      temperature: z.number(),
+    }),
+  }),
+]);
+
+const weatherTool = createTool({
+  name: "get_weather",
+  description: "Get the current weather for a location",
+  parameters: z.object({
+    location: z.string().describe("The city name"),
+  }),
+  outputSchema: weatherOutputSchema,
+  async *execute({ location }) {
+    yield {
+      status: "loading" as const,
+      text: `Getting weather for ${location}`,
+      weather: undefined,
+    };
+
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    const temperature = 72 + Math.floor(Math.random() * 21) - 10;
+
+    yield {
+      status: "success" as const,
+      text: `The weather in ${location} is ${temperature}F`,
+      weather: { location, temperature },
+    };
+  },
+});
+```
+
 ### Tool Tags
 
 Tags are optional string labels that help organize and categorize tools.
@@ -100,6 +185,8 @@ const weatherTool = createTool({
 
 Tags are included in OpenTelemetry spans and visible in the VoltAgent observability dashboard, making it easy to analyze tool usage patterns and debug agent behavior.
 
+Tool tags also flow through the REST tool endpoints (`GET /tools` and `POST /tools/:name/execute` responses), so you can build frontend tooling or access control based on tags.
+
 ### Provider-Specific Options
 
 You can pass provider-specific options to enable advanced features like caching. Currently supported providers include Anthropic, OpenAI, Google, and others.
@@ -137,12 +224,11 @@ Add tools when creating an agent. The model decides when to use them based on th
 
 ```ts
 import { Agent } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 const agent = new Agent({
   name: "Weather Assistant",
   instructions: "An assistant that provides weather information",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   tools: [weatherTool],
 });
 
@@ -173,7 +259,7 @@ const calculatorTool = createTool({
 const agent = new Agent({
   name: "Multi-Tool Assistant",
   instructions: "An assistant that can check weather and perform calculations",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   tools: [weatherTool, calculatorTool],
 });
 
@@ -253,6 +339,7 @@ The `options` parameter includes all `OperationContext` fields plus an **optiona
 - `operationId`: Unique identifier for this operation
 - `userId`: Optional user identifier
 - `conversationId`: Optional conversation identifier
+- `workspace`: Workspace instance configured on the agent (if available)
 - `context`: Map for user-provided context values
 - `systemContext`: Map for internal system values
 - `isActive`: Whether the operation is still active
@@ -263,6 +350,31 @@ The `options` parameter includes all `OperationContext` fields plus an **optiona
 - `elicitation`: Optional function for requesting user input
 
 > - Since `ToolExecuteOptions` extends `Partial<OperationContext>`, you can name the second parameter anything you like (`options`, `context`, `ctx`, etc.)
+
+Example: reading workspace content inside a custom tool call:
+
+```ts
+const readWorkspaceData = createTool({
+  name: "read_workspace_data",
+  description: "Read a workspace file and inspect sandbox output",
+  parameters: z.object({ path: z.string() }),
+  execute: async ({ path }, options) => {
+    const workspace = options?.workspace;
+    if (!workspace) {
+      return "No workspace configured";
+    }
+
+    const content = await workspace.filesystem.read(path);
+    const sandboxResult = await workspace.sandbox?.execute({
+      command: "cat",
+      args: [path],
+      operationContext: options as any,
+    });
+
+    return `filesystem=${content}\nsandbox=${sandboxResult?.stdout ?? ""}`;
+  },
+});
+```
 
 ## Cancellation with AbortController
 
@@ -334,6 +446,113 @@ try {
   }
 }
 ```
+
+## Tool Execution Approval (needsApproval)
+
+Some tools should not run automatically because they trigger sensitive actions (payments, file changes, command execution, etc). Set `needsApproval` to require explicit user approval before the tool executes.
+
+```ts
+import { createTool } from "@voltagent/core";
+import { z } from "zod";
+
+const runCommandTool = createTool({
+  name: "runCommand",
+  description: "Run a shell command",
+  parameters: z.object({
+    command: z.string().describe("Command to execute"),
+  }),
+  needsApproval: true,
+  execute: async ({ command }) => {
+    // Execute safely
+    return { ok: true, command };
+  },
+});
+```
+
+`needsApproval` can also be a function for dynamic policies:
+
+```ts
+const processPaymentTool = createTool({
+  name: "processPayment",
+  description: "Charge a customer",
+  parameters: z.object({
+    amount: z.number(),
+    customerId: z.string(),
+  }),
+  needsApproval: async ({ amount }) => amount > 1000,
+  execute: async ({ amount, customerId }) => {
+    return { success: true, amount, customerId };
+  },
+});
+```
+
+### How the Approval Flow Works
+
+1. The model calls a tool with `needsApproval`.
+2. VoltAgent returns a tool part with `state: "approval-requested"` instead of executing.
+3. Your UI asks the user to approve or deny.
+4. Send a tool approval response back to VoltAgent.
+5. If approved, the tool executes in the next step. If denied, the model sees the denial and can respond accordingly.
+
+### UI Implementation (useChat)
+
+VoltAgent's `/agents/:id/chat` stream is compatible with AI SDK `useChat`, so you can render the approval request and send a response from the UI.
+
+```tsx
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
+
+function Chat() {
+  const { messages, addToolApprovalResponse } = useChat({
+    transport: new DefaultChatTransport({ api: "/agents/weather/chat" }),
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+  });
+
+  return (
+    <div>
+      {messages.map((message) => (
+        <div key={message.id}>
+          {message.parts.map((part) => {
+            if (part.type === "tool-runCommand") {
+              if (part.state === "approval-requested") {
+                return (
+                  <div key={part.toolCallId}>
+                    <p>Approve command: {part.input.command}?</p>
+                    <button
+                      onClick={() =>
+                        addToolApprovalResponse({
+                          id: part.approval.id,
+                          approved: true,
+                        })
+                      }
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() =>
+                        addToolApprovalResponse({
+                          id: part.approval.id,
+                          approved: false,
+                          reason: "User denied",
+                        })
+                      }
+                    >
+                      Deny
+                    </button>
+                  </div>
+                );
+              }
+            }
+            return null;
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+If you do not use `sendAutomaticallyWhen`, call `sendMessage` manually after approval to continue the flow.
 
 ## Client-Side Tools
 
@@ -495,13 +714,12 @@ function ReadClipboardTool({
 
 **Important**: You must call `addToolResult` to send the tool result back to the model. Without this, the model considers the tool call a failure.
 
-## Tool Hooks
+## Agent Tool Hooks
 
-Hooks let you respond to tool execution events for logging, UI updates, or additional actions.
+Hooks let you respond to tool execution events for logging, UI updates, or additional actions. Use `onToolError` when you need to customize the error payload before it is returned to the model. For tool-level hooks (per tool), see the **Tool Hooks** section above.
 
 ```ts
 import { Agent, createHooks, isAbortError } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 const hooks = createHooks({
   onToolStart({ agent, tool, context, args }) {
@@ -524,12 +742,28 @@ const hooks = createHooks({
       console.log(`Result:`, output);
     }
   },
+
+  onToolError({ tool, originalError }) {
+    const maybeAxios = (originalError as any).isAxiosError === true;
+    if (!maybeAxios) {
+      return;
+    }
+
+    return {
+      output: {
+        error: true,
+        message: originalError.message,
+        code: (originalError as any).code,
+        status: (originalError as any).response?.status,
+      },
+    };
+  },
 });
 
 const agent = new Agent({
   name: "Assistant with Tool Hooks",
   instructions: "An assistant that logs tool execution",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   tools: [weatherTool],
   hooks: hooks,
 });
@@ -566,7 +800,7 @@ const hooks = createHooks({
 const agent = new Agent({
   name: "Controlled Assistant",
   instructions: "An assistant with tag-based access control",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   tools: [queryTool, updateTool, weatherTool],
   hooks: hooks,
 });
@@ -661,16 +895,16 @@ const screenshotTool = createTool({
     };
   },
   // Convert output to multi-modal content for LLM
-  toModelOutput: (result) => ({
+  toModelOutput: ({ output }) => ({
     type: "content",
     value: [
       {
         type: "text",
-        text: `Screenshot captured at ${result.timestamp}`,
+        text: `Screenshot captured at ${output.timestamp}`,
       },
       {
         type: "media",
-        data: result.data,
+        data: output.data,
         mediaType: "image/png",
       },
     ],
@@ -685,7 +919,7 @@ The `toModelOutput` function can return different content types:
 **Text only:**
 
 ```ts
-toModelOutput: (output) => ({
+toModelOutput: ({ output }) => ({
   type: "text",
   value: "Operation completed successfully",
 });
@@ -694,7 +928,7 @@ toModelOutput: (output) => ({
 **JSON data:**
 
 ```ts
-toModelOutput: (output) => ({
+toModelOutput: ({ output }) => ({
   type: "json",
   value: { status: "success", data: output },
 });
@@ -703,7 +937,7 @@ toModelOutput: (output) => ({
 **Multi-modal (text + image):**
 
 ```ts
-toModelOutput: (output) => ({
+toModelOutput: ({ output }) => ({
   type: "content",
   value: [
     { type: "text", text: "Here is the image:" },
@@ -715,7 +949,7 @@ toModelOutput: (output) => ({
 **Error handling:**
 
 ```ts
-toModelOutput: (output) => {
+toModelOutput: ({ output }) => {
   if (output.error) {
     return {
       type: "error-text",
@@ -832,7 +1066,6 @@ Connect to MCP servers and use their tools with your agents:
 
 ```ts
 import { Agent, MCPConfiguration } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 // Configure MCP servers
 const mcpConfig = new MCPConfiguration({
@@ -862,7 +1095,7 @@ const allMcpTools = await mcpConfig.getTools();
 const agent = new Agent({
   name: "MCP-Enhanced Assistant",
   description: "Assistant with MCP tools",
-  model: openai("gpt-4o"),
+  model: "openai/gpt-4o",
   tools: allMcpTools,
 });
 ```

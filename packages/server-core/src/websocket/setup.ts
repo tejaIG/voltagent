@@ -8,6 +8,9 @@ import type { Socket } from "node:net";
 import type { ServerProviderDeps } from "@voltagent/core";
 import type { Logger } from "@voltagent/internal";
 import { WebSocketServer } from "ws";
+import { requiresAuth } from "../auth/defaults";
+import type { AuthNextConfig } from "../auth/next";
+import { isAuthNextConfig, normalizeAuthNextConfig, resolveAuthNextAccess } from "../auth/next";
 import type { AuthProvider } from "../auth/types";
 import { handleWebSocketConnection } from "./handlers";
 
@@ -20,34 +23,30 @@ function isDevWebSocketRequest(req: IncomingMessage): boolean {
   return hasDevHeader && isDevEnv;
 }
 
-/**
- * Helper to check console access for WebSocket IncomingMessage
- */
-function hasWebSocketConsoleAccess(req: IncomingMessage): boolean {
-  // Parse URL to get query parameters
-  const url = new URL(req.url || "", `http://${req.headers.host || "localhost"}`);
-
-  // 1. Development bypass - check both header and query param
+function isWebSocketDevBypass(req: IncomingMessage, url: URL): boolean {
   if (isDevWebSocketRequest(req)) {
     return true;
   }
 
-  // Also check query param for dev bypass (for browser WebSocket)
   const devParam = url.searchParams.get("dev");
-  if (devParam === "true" && process.env.NODE_ENV !== "production") {
+  return devParam === "true" && process.env.NODE_ENV !== "production";
+}
+
+/**
+ * Helper to check console access for WebSocket IncomingMessage
+ */
+function hasWebSocketConsoleAccess(req: IncomingMessage, url: URL): boolean {
+  if (isWebSocketDevBypass(req, url)) {
     return true;
   }
 
-  // 2. Console Access Key check - check both header and query param
   const configuredKey = process.env.VOLTAGENT_CONSOLE_ACCESS_KEY;
   if (configuredKey) {
-    // Check header (for non-browser clients)
     const headerKey = req.headers["x-console-access-key"] as string;
     if (headerKey === configuredKey) {
       return true;
     }
 
-    // Check query param (for browser WebSocket)
     const queryKey = url.searchParams.get("key");
     if (queryKey === configuredKey) {
       return true;
@@ -57,17 +56,153 @@ function hasWebSocketConsoleAccess(req: IncomingMessage): boolean {
   return false;
 }
 
+type WebSocketAuthResult = {
+  user: any | null;
+  handled: boolean;
+};
+
+function closeUpgrade(socket: Socket, statusLine: string): void {
+  socket.end(`${statusLine}\r\n\r\n`);
+}
+
+function denyUnauthorized(socket: Socket): WebSocketAuthResult {
+  closeUpgrade(socket, "HTTP/1.1 401 Unauthorized");
+  return { user: null, handled: true };
+}
+
+function denyServerError(socket: Socket): WebSocketAuthResult {
+  closeUpgrade(socket, "HTTP/1.1 500 Internal Server Error");
+  return { user: null, handled: true };
+}
+
+async function verifyTokenIfPresent(
+  provider: AuthProvider<any>,
+  token: string | null,
+): Promise<any | null> {
+  if (!token) {
+    return null;
+  }
+  try {
+    return await provider.verifyToken(token);
+  } catch {
+    return null;
+  }
+}
+
+async function verifyTokenOrReject(params: {
+  provider: AuthProvider<any>;
+  token: string | null;
+  socket: Socket;
+  logger?: Logger;
+  missingTokenLog: string;
+}): Promise<WebSocketAuthResult> {
+  const { provider, token, socket, logger, missingTokenLog } = params;
+
+  if (!token) {
+    logger?.debug(missingTokenLog);
+    return denyUnauthorized(socket);
+  }
+
+  try {
+    const user = await provider.verifyToken(token);
+    return { user, handled: false };
+  } catch (error) {
+    logger?.debug("[WebSocket] Token verification failed:", { error });
+    return denyUnauthorized(socket);
+  }
+}
+
+async function resolveAuthNextUser(params: {
+  auth: AuthNextConfig<any> | AuthProvider<any>;
+  path: string;
+  req: IncomingMessage;
+  url: URL;
+  socket: Socket;
+  logger?: Logger;
+}): Promise<WebSocketAuthResult> {
+  const { auth, path, req, url, socket, logger } = params;
+  const config = normalizeAuthNextConfig(auth);
+  const provider = config.provider;
+  const access = resolveAuthNextAccess("WS", path, config);
+
+  if (access === "public") {
+    const user = await verifyTokenIfPresent(provider, url.searchParams.get("token"));
+    return { user, handled: false };
+  }
+
+  if (access === "console") {
+    const hasAccess = hasWebSocketConsoleAccess(req, url);
+    if (!hasAccess) {
+      logger?.debug("[WebSocket] Unauthorized console connection attempt");
+      return denyUnauthorized(socket);
+    }
+    return { user: { id: "console", type: "console-access" }, handled: false };
+  }
+
+  if (isWebSocketDevBypass(req, url)) {
+    // Dev bypass for local testing
+    return { user: null, handled: false };
+  }
+
+  return verifyTokenOrReject({
+    provider,
+    token: url.searchParams.get("token"),
+    socket,
+    logger,
+    missingTokenLog: "[WebSocket] No token provided for protected WebSocket",
+  });
+}
+
+async function resolveLegacyAuthUser(params: {
+  auth: AuthProvider<any>;
+  path: string;
+  req: IncomingMessage;
+  url: URL;
+  socket: Socket;
+  logger?: Logger;
+}): Promise<WebSocketAuthResult> {
+  const { auth, path, req, url, socket, logger } = params;
+
+  if (path.includes("/observability")) {
+    const hasAccess = hasWebSocketConsoleAccess(req, url);
+    if (!hasAccess) {
+      logger?.debug("[WebSocket] Unauthorized observability connection attempt");
+      return denyUnauthorized(socket);
+    }
+    return { user: { id: "console", type: "console-access" }, handled: false };
+  }
+
+  const hasConsoleAccess = hasWebSocketConsoleAccess(req, url);
+  if (hasConsoleAccess) {
+    return { user: { id: "console", type: "console-access" }, handled: false };
+  }
+
+  const needsAuth = requiresAuth("WS", path, auth.publicRoutes, auth.defaultPrivate);
+  if (needsAuth) {
+    return verifyTokenOrReject({
+      provider: auth,
+      token: url.searchParams.get("token"),
+      socket,
+      logger,
+      missingTokenLog: "[WebSocket] No token provided for protected WebSocket",
+    });
+  }
+
+  const user = await verifyTokenIfPresent(auth, url.searchParams.get("token"));
+  return { user, handled: false };
+}
+
 /**
  * Create and configure a WebSocket server
  * @param deps Server provider dependencies
  * @param logger Logger instance
- * @param auth Optional authentication provider
+ * @param auth Optional authentication provider or authNext config
  * @returns Configured WebSocket server
  */
 export function createWebSocketServer(
   deps: ServerProviderDeps,
   logger: Logger,
-  _auth?: AuthProvider<any>,
+  _auth?: AuthProvider<any> | AuthNextConfig<any>,
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -84,74 +219,48 @@ export function createWebSocketServer(
  * @param server HTTP server instance
  * @param wss WebSocket server instance
  * @param pathPrefix Path prefix for WebSocket connections (default: "/ws")
- * @param auth Optional authentication provider
+ * @param auth Optional authentication provider or authNext config
  * @param logger Logger instance
  */
 export function setupWebSocketUpgrade(
   server: any,
   wss: WebSocketServer,
   pathPrefix = "/ws",
-  auth?: AuthProvider<any>,
+  auth?: AuthProvider<any> | AuthNextConfig<any>,
   logger?: Logger,
 ): void {
   server.addListener("upgrade", async (req: IncomingMessage, socket: Socket, head: Buffer) => {
     const url = new URL(req.url || "", "http://localhost");
     const path = url.pathname;
 
-    if (path.startsWith(pathPrefix)) {
-      let user: any = null;
+    if (!path.startsWith(pathPrefix)) {
+      socket.destroy();
+      return;
+    }
 
-      // Check authentication if auth provider is configured
-      if (auth) {
-        try {
-          // Check if it's an observability WebSocket that needs Console access
-          if (path.includes("/observability")) {
-            // Check Console Access or dev bypass using WebSocket-specific helpers
-            const hasAccess = hasWebSocketConsoleAccess(req);
-            if (!hasAccess) {
-              logger?.debug("[WebSocket] Unauthorized observability connection attempt");
-              socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-              socket.destroy();
-              return;
-            }
-            // Set a pseudo user for console access
-            user = { id: "console", type: "console-access" };
-          } else {
-            // For other WebSocket paths, try to authenticate with JWT
-            // Extract token from query params (common for WebSocket auth)
-            const token = url.searchParams.get("token");
-            if (token) {
-              try {
-                user = await auth.verifyToken(token);
-              } catch (error) {
-                logger?.debug("[WebSocket] Token verification failed:", { error });
-                // For non-observability paths, reject if auth fails
-                socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-                socket.destroy();
-                return;
-              }
-            } else if (auth.defaultPrivate) {
-              // If auth is required by default and no token provided
-              logger?.debug("[WebSocket] No token provided for protected WebSocket");
-              socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-              socket.destroy();
-              return;
-            }
-          }
-        } catch (error) {
-          logger?.error("[WebSocket] Auth error:", { error });
-          socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
-          socket.destroy();
+    let user: any = null;
+
+    // Check authentication if auth provider is configured
+    if (auth) {
+      try {
+        const authResult = isAuthNextConfig(auth)
+          ? await resolveAuthNextUser({ auth, path, req, url, socket, logger })
+          : await resolveLegacyAuthUser({ auth, path, req, url, socket, logger });
+
+        if (authResult.handled) {
           return;
         }
+        user = authResult.user;
+      } catch (error) {
+        logger?.error("[WebSocket] Auth error:", { error });
+        denyServerError(socket);
+        return;
       }
-
-      // Proceed with WebSocket upgrade
-      wss.handleUpgrade(req, socket, head, (websocket) => {
-        wss.emit("connection", websocket, req, user);
-      });
-    } else {
-      socket.destroy();
     }
+
+    // Proceed with WebSocket upgrade
+    wss.handleUpgrade(req, socket, head, (websocket) => {
+      wss.emit("connection", websocket, req, user);
+    });
   });
 }

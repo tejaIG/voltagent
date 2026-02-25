@@ -6,6 +6,7 @@ import { type Logger, safeStringify } from "@voltagent/internal";
 import type { UIMessage } from "ai";
 import type { z } from "zod";
 import type { OperationContext } from "../agent/types";
+import { AiSdkEmbeddingAdapter } from "./adapters/embedding/ai-sdk";
 import { EmbeddingAdapterNotConfiguredError, VectorAdapterNotConfiguredError } from "./errors";
 import type {
   Conversation,
@@ -14,6 +15,8 @@ import type {
   CreateConversationInput,
   Document,
   EmbeddingAdapter,
+  EmbeddingAdapterConfig,
+  EmbeddingAdapterInput,
   GetConversationStepsOptions,
   GetMessagesOptions,
   MemoryConfig,
@@ -22,12 +25,47 @@ import type {
   SearchResult,
   StorageAdapter,
   VectorAdapter,
+  WorkflowRunQuery,
   WorkflowStateEntry,
   WorkingMemoryConfig,
   WorkingMemorySummary,
   WorkingMemoryUpdateOptions,
 } from "./types";
 import { BatchEmbeddingCache } from "./utils/cache";
+
+const isEmbeddingAdapter = (value: EmbeddingAdapterInput): value is EmbeddingAdapter =>
+  typeof value === "object" &&
+  value !== null &&
+  "embed" in value &&
+  typeof (value as EmbeddingAdapter).embed === "function" &&
+  "embedBatch" in value &&
+  typeof (value as EmbeddingAdapter).embedBatch === "function";
+
+const isEmbeddingAdapterConfig = (value: EmbeddingAdapterInput): value is EmbeddingAdapterConfig =>
+  typeof value === "object" && value !== null && "model" in value && !isEmbeddingAdapter(value);
+
+const resolveEmbeddingAdapter = (
+  embedding?: EmbeddingAdapterInput,
+): EmbeddingAdapter | undefined => {
+  if (!embedding) {
+    return undefined;
+  }
+
+  if (isEmbeddingAdapter(embedding)) {
+    return embedding;
+  }
+
+  if (typeof embedding === "string") {
+    return new AiSdkEmbeddingAdapter(embedding);
+  }
+
+  if (isEmbeddingAdapterConfig(embedding)) {
+    const { model, ...options } = embedding;
+    return new AiSdkEmbeddingAdapter(model, options);
+  }
+
+  return new AiSdkEmbeddingAdapter(embedding);
+};
 
 /**
  * Memory Class
@@ -39,6 +77,7 @@ export class Memory {
   private readonly vector?: VectorAdapter;
   private embeddingCache?: BatchEmbeddingCache;
   private readonly workingMemoryConfig?: WorkingMemoryConfig;
+  private readonly titleGenerationConfig?: MemoryConfig["generateTitle"];
 
   // Internal properties for Agent integration
   private resourceId?: string;
@@ -46,9 +85,10 @@ export class Memory {
 
   constructor(options: MemoryConfig) {
     this.storage = options.storage;
-    this.embedding = options.embedding;
+    this.embedding = resolveEmbeddingAdapter(options.embedding);
     this.vector = options.vector;
     this.workingMemoryConfig = options.workingMemory;
+    this.titleGenerationConfig = options.generateTitle;
 
     // Initialize embedding cache if enabled
     if (options.enableCache && this.embedding) {
@@ -133,6 +173,31 @@ export class Memory {
     return this.storage.clearMessages(userId, conversationId, context);
   }
 
+  /**
+   * Delete specific messages by ID for a conversation
+   * Adapters should delete atomically when possible; otherwise a best-effort delete may be used.
+   */
+  async deleteMessages(
+    messageIds: string[],
+    userId: string,
+    conversationId: string,
+    context?: OperationContext,
+  ): Promise<void> {
+    await this.storage.deleteMessages(messageIds, userId, conversationId, context);
+
+    if (this.vector && messageIds.length > 0) {
+      try {
+        const vectorIds = messageIds.map((id) => `msg_${conversationId}_${id}`);
+        await this.vector.deleteBatch(vectorIds);
+      } catch (error) {
+        console.warn(
+          `Failed to delete vectors for conversation ${conversationId} messages:`,
+          error,
+        );
+      }
+    }
+  }
+
   async getConversationSteps(
     userId: string,
     conversationId: string,
@@ -177,6 +242,13 @@ export class Memory {
    */
   async queryConversations(options: ConversationQueryOptions): Promise<Conversation[]> {
     return this.storage.queryConversations(options);
+  }
+
+  /**
+   * Count conversations with the same filtering as queryConversations (ignores limit/offset)
+   */
+  async countConversations(options: ConversationQueryOptions): Promise<number> {
+    return this.storage.countConversations(options);
   }
 
   /**
@@ -1053,6 +1125,13 @@ Remember:
   }
 
   /**
+   * Get conversation title generation configuration
+   */
+  getTitleGenerationConfig(): MemoryConfig["generateTitle"] | undefined {
+    return this.titleGenerationConfig;
+  }
+
+  /**
    * Get a UI-friendly summary of working memory configuration
    */
   getWorkingMemorySummary(): WorkingMemorySummary | null {
@@ -1107,6 +1186,13 @@ Remember:
    */
   async getWorkflowState(executionId: string): Promise<WorkflowStateEntry | null> {
     return this.storage.getWorkflowState(executionId);
+  }
+
+  /**
+   * Query workflow states with filters
+   */
+  async queryWorkflowRuns(query: WorkflowRunQuery): Promise<WorkflowStateEntry[]> {
+    return this.storage.queryWorkflowRuns(query);
   }
 
   /**

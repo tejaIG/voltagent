@@ -108,7 +108,7 @@ You'll see:
 ══════════════════════════════════════════════════
   ✓ HTTP Server:  http://localhost:3141
   ↪ Share it:    pnpm volt tunnel 3141 (secure HTTPS tunnel for teammates)
-     Docs: https://voltagent.dev/docs/deployment/local-tunnel/
+     Docs: https://voltagent.dev/deployment-docs/local-tunnel/
   ✓ Swagger UI:   http://localhost:3141/ui
 
   Test your agents with VoltOps Console: https://console.voltagent.dev
@@ -325,7 +325,6 @@ export const retriever = new PineconeRetriever();
 Now create agents using different retrieval patterns in `src/index.ts`:
 
 ```typescript
-import { openai } from "@ai-sdk/openai";
 import { Agent, VoltAgent } from "@voltagent/core";
 import { honoServer } from "@voltagent/server-hono";
 import { retriever } from "./retriever/index.js";
@@ -335,7 +334,7 @@ const agentWithRetriever = new Agent({
   name: "Assistant with Retriever",
   instructions:
     "A helpful assistant that automatically searches the Pinecone knowledge base for relevant information",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   retriever: retriever,
 });
 
@@ -343,7 +342,7 @@ const agentWithRetriever = new Agent({
 const agentWithTools = new Agent({
   name: "Assistant with Tools",
   instructions: "A helpful assistant that can search the knowledge base when needed",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   tools: [retriever.tool],
 });
 

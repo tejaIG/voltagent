@@ -23,6 +23,7 @@ VoltAgent provides two streaming endpoints:
 - `/agents/:id/stream` - Raw fullStream events
 
 Use `/chat` for UI integration with useChat.
+Use `/stream` when you need low-level events such as `reasoning-start`, `reasoning-delta`, and `reasoning-end`.
 
 ## Basic Implementation
 
@@ -341,12 +342,29 @@ export function ChatInterface() {
 
 ### VoltAgent Specific
 
-| Option           | Type   | Description                                        |
-| ---------------- | ------ | -------------------------------------------------- |
-| `userId`         | string | User identifier for memory persistence             |
-| `conversationId` | string | Conversation thread ID                             |
-| `context`        | object | Dynamic context (converted to Map internally)      |
-| `contextLimit`   | number | Number of previous messages to include from memory |
+| Option                                      | Type    | Description                                                                    |
+| ------------------------------------------- | ------- | ------------------------------------------------------------------------------ |
+| `userId`                                    | string  | User identifier for memory persistence                                         |
+| `conversationId`                            | string  | Conversation thread ID                                                         |
+| `context`                                   | object  | Dynamic context (converted to Map internally)                                  |
+| `contextLimit`                              | number  | Number of previous messages to include from memory                             |
+| `conversationPersistence.mode`              | string  | `"step"` (default) or `"finish"`                                               |
+| `conversationPersistence.debounceMs`        | number  | Debounce window in milliseconds (default: `200`)                               |
+| `conversationPersistence.flushOnToolResult` | boolean | Flush immediately on `tool-result`/`tool-error` in step mode (default: `true`) |
+
+Example:
+
+```ts
+options: {
+  userId,
+  conversationId,
+  conversationPersistence: {
+    mode: "step",
+    debounceMs: 200,
+    flushOnToolResult: true,
+  },
+}
+```
 
 ### AI SDK Core Options
 
@@ -366,14 +384,16 @@ export function ChatInterface() {
 
 ### Provider-Specific Options
 
-| Option                            | Type     | Description                            |
-| --------------------------------- | -------- | -------------------------------------- |
-| `providerOptions`                 | object   | Provider-specific settings             |
-| `providerOptions.temperature`     | number   | Fallback temperature                   |
-| `providerOptions.maxTokens`       | number   | Fallback max tokens                    |
-| `providerOptions.reasoningEffort` | string   | For o1 models: 'low', 'medium', 'high' |
-| `providerOptions.extraOptions`    | object   | Additional provider-specific options   |
-| `providerOptions.onStepFinish`    | function | Callback when a step completes         |
+| Option                                    | Type     | Description                                        |
+| ----------------------------------------- | -------- | -------------------------------------------------- |
+| `providerOptions`                         | object   | Provider-specific settings                         |
+| `providerOptions.openai.reasoningEffort`  | string   | OpenAI reasoning effort (e.g. `"low"`, `"medium"`) |
+| `providerOptions.openai.textVerbosity`    | string   | OpenAI verbosity (`"low"`, `"medium"`, `"high"`)   |
+| `providerOptions.anthropic.sendReasoning` | boolean  | Include Anthropic reasoning metadata               |
+| `providerOptions.google.thinkingConfig`   | object   | Gemini thinking budget/configuration               |
+| `providerOptions.xai.reasoningEffort`     | string   | xAI reasoning effort                               |
+| `providerOptions.extraOptions`            | object   | Additional provider-specific options               |
+| `providerOptions.onStepFinish`            | function | Callback when a step completes                     |
 
 ### Semantic Memory Options
 

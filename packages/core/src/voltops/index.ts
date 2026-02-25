@@ -7,6 +7,7 @@
 
 // Export main client class
 export { VoltOpsClient } from "./client";
+export { getGlobalVoltOpsClient } from "./global-client";
 
 // Export all types
 export type {
@@ -34,6 +35,12 @@ export type {
   VoltOpsCompleteEvalRunRequest,
   VoltOpsCreateScorerRequest,
   VoltOpsScorerSummary,
+  VoltOpsFeedbackConfig,
+  VoltOpsFeedback,
+  VoltOpsFeedbackCreateInput,
+  VoltOpsFeedbackExpiresIn,
+  VoltOpsFeedbackToken,
+  VoltOpsFeedbackTokenCreateInput,
   VoltOpsActionExecutionResult,
   VoltOpsAirtableCreateRecordParams,
   VoltOpsAirtableUpdateRecordParams,

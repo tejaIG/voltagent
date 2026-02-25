@@ -69,6 +69,7 @@ describe("Auth Defaults", () => {
       it("should not require auth for default public routes", () => {
         expect(requiresAuth("GET", "/agents")).toBe(false);
         expect(requiresAuth("GET", "/workflows")).toBe(false);
+        expect(requiresAuth("GET", "/tools")).toBe(false);
         expect(requiresAuth("GET", "/doc")).toBe(false);
         expect(requiresAuth("GET", "/ui")).toBe(false);
         expect(requiresAuth("GET", "/")).toBe(false);
@@ -94,13 +95,20 @@ describe("Auth Defaults", () => {
       it("should require auth for agent execution endpoints", () => {
         expect(requiresAuth("POST", "/agents/my-agent/text")).toBe(true);
         expect(requiresAuth("POST", "/agents/123/stream")).toBe(true);
+        expect(requiresAuth("GET", "/agents/123/chat/conv-1/stream")).toBe(true);
         expect(requiresAuth("POST", "/agents/abc/object")).toBe(true);
         expect(requiresAuth("POST", "/agents/test/stream-object")).toBe(true);
+      });
+
+      it("should require auth for tool execution but not listing", () => {
+        expect(requiresAuth("GET", "/tools")).toBe(false); // Listing is public (like /agents, /workflows)
+        expect(requiresAuth("POST", "/tools/example/execute")).toBe(true); // Execution requires auth
       });
 
       it("should require auth for workflow execution endpoints", () => {
         expect(requiresAuth("POST", "/workflows/my-workflow/run")).toBe(true);
         expect(requiresAuth("POST", "/workflows/123/stream")).toBe(true);
+        expect(requiresAuth("GET", "/workflows/123/executions/exec-1/stream")).toBe(true);
       });
 
       it("should require auth for workflow control endpoints", () => {
@@ -118,6 +126,12 @@ describe("Auth Defaults", () => {
         expect(requiresAuth("GET", "/observability/memory/users")).toBe(true);
         expect(requiresAuth("POST", "/observability/memory/conversations")).toBe(true);
         expect(requiresAuth("DELETE", "/observability/spans/123")).toBe(true);
+      });
+
+      it("should require auth for memory endpoints via wildcard", () => {
+        expect(requiresAuth("GET", "/api/memory/conversations")).toBe(true);
+        expect(requiresAuth("GET", "/api/memory/conversations/conv-1/messages")).toBe(true);
+        expect(requiresAuth("POST", "/api/memory/save-messages")).toBe(true);
       });
 
       it("should require auth for system update endpoints", () => {

@@ -22,20 +22,28 @@ Create the agents that will serve as sub-agents:
 
 ```ts
 import { Agent } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 // Create an agent for content creation
 const contentCreatorAgent = new Agent({
   name: "ContentCreator",
   instructions: "Creates short text content on requested topics",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
 });
 
 // Create an agent for formatting
 const formatterAgent = new Agent({
   name: "Formatter",
   instructions: "Formats and styles text content",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
+});
+
+// Give sub-agents a concise purpose to control what the supervisor sees
+const summarizerAgent = new Agent({
+  name: "Summarizer",
+  purpose: "Summarize long support tickets",
+  instructions:
+    "Read the conversation and produce a concise summary highlighting blockers and owners",
+  model: "openai/gpt-4o-mini",
 });
 ```
 
@@ -45,13 +53,12 @@ Pass the agents in the `subAgents` array during supervisor initialization:
 
 ```ts
 import { Agent } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 const supervisorAgent = new Agent({
   name: "Supervisor",
   instructions: "Coordinates between content creation and formatting agents",
-  model: openai("gpt-4o-mini"),
-  subAgents: [contentCreatorAgent, formatterAgent],
+  model: "openai/gpt-4o-mini",
+  subAgents: [contentCreatorAgent, formatterAgent, summarizerAgent],
 });
 ```
 
@@ -65,6 +72,12 @@ See: [Advanced Configuration](#advanced-configuration)
 
 Supervisor agents use an automatically generated system message that includes guidelines for managing sub-agents. Customize this behavior using the `supervisorConfig` option.
 
+### Purpose vs. Instructions (what the supervisor sees)
+
+- The supervisor lists sub-agents in a `<specialized_agents>` block using the sub-agent `purpose` when provided; if `purpose` is missing, it falls back to `instructions`, and if both are missing it uses `"Dynamic instructions"`.
+- Set a short `purpose` to avoid leaking long/verbose instructions into the supervisor’s prompt and to keep the prompt small. The full `instructions` still run for the sub-agent itself when delegated.
+- If you leave `purpose` empty, expect the supervisor prompt to include the entire `instructions` string for that sub-agent.
+
 :::info Default System Message
 See the [generateSupervisorSystemMessage implementation](https://github.com/VoltAgent/voltagent/blob/main/packages/core/src/agent/subagent/index.ts#L131) on GitHub.
 :::
@@ -77,12 +90,11 @@ The `supervisorConfig` option is only available when `subAgents` are provided. T
 
 ```ts
 import { Agent } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 const supervisorAgent = new Agent({
   name: "Content Supervisor",
   instructions: "Coordinate content creation workflow",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   subAgents: [writerAgent, editorAgent],
 
   supervisorConfig: {
@@ -93,7 +105,7 @@ const supervisorAgent = new Agent({
       "Prioritize user experience",
     ],
 
-    // Control whether to include previous agent interactions
+    // Control whether prior sub-agent interactions are injected into supervisor prompt
     includeAgentsMemory: true, // default: true
   },
 });
@@ -107,14 +119,24 @@ Control which events from sub-agents are forwarded to the parent stream. By defa
 const supervisorAgent = new Agent({
   name: "Content Supervisor",
   instructions: "Coordinate content creation workflow",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   subAgents: [writerAgent, editorAgent],
 
   supervisorConfig: {
     // Configure which sub-agent events to forward
     fullStreamEventForwarding: {
       // Default: ['tool-call', 'tool-result']
-      types: ["tool-call", "tool-result", "text-delta", "reasoning", "source", "error", "finish"],
+      types: [
+        "tool-call",
+        "tool-result",
+        "text-delta",
+        "reasoning-start",
+        "reasoning-delta",
+        "reasoning-end",
+        "source",
+        "error",
+        "finish",
+      ],
     },
   },
 });
@@ -135,7 +157,17 @@ fullStreamEventForwarding: {
 
 // Full visibility - All events including reasoning
 fullStreamEventForwarding: {
-  types: ['tool-call', 'tool-result', 'text-delta', 'reasoning', 'source', 'error', 'finish'],
+  types: [
+    'tool-call',
+    'tool-result',
+    'text-delta',
+    'reasoning-start',
+    'reasoning-delta',
+    'reasoning-end',
+    'source',
+    'error',
+    'finish'
+  ],
 }
 
 // Clean tool names - No agent prefix (add prefix manually when consuming events if desired)
@@ -154,7 +186,7 @@ Control how the supervisor handles sub-agent failures.
 const supervisorAgent = new Agent({
   name: "Supervisor",
   instructions: "Coordinate between agents",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   subAgents: [dataProcessor, analyzer],
 
   supervisorConfig: {
@@ -198,8 +230,8 @@ const result = await supervisor.streamText("Process data");
 // result contains error message like "Error in DataProcessor: Stream failed"
 ```
 
-:::info Native Retry Support
-VoltAgent uses the AI SDK's native retry mechanism (default: 3 attempts). Setting `throwOnStreamError: true` is useful for custom error handling or logging at a higher level, not for implementing retry logic.
+:::info Retry Behavior
+VoltAgent retries model calls based on `maxRetries`. `throwOnStreamError` controls how stream errors are surfaced; it does not change retry or fallback behavior.
 :::
 
 **Silent Errors - Custom Messaging:**
@@ -263,35 +295,36 @@ if (response.status === "error") {
 
 #### Using with fullStream
 
-When using `fullStream`, the configuration controls what you receive from sub-agents:
+When using `fullStream`, the configuration controls what you receive from sub-agents. VoltAgent
+forwards metadata onto each forwarded chunk so you can attribute every event:
+
+- `subAgentId` / `subAgentName`: the sub-agent that produced the chunk
+- `executingAgentId` / `executingAgentName`: same as above (reserved for nested handoffs)
+- `parentAgentId` / `parentAgentName`: the supervisor that forwarded the chunk
+- `agentPath`: ordered names from supervisor → executing agent
+
+This metadata is only on the streamed events (fullStream / UI streams); it is **not** sent back to
+the model provider or injected into the LLM messages.
 
 ```ts
 // Stream with full event details
-const result = await supervisorAgent.streamText("Create and edit content", {
-  fullStream: true,
-});
+const result = await supervisorAgent.streamText("Create and edit content");
 
 // Process different event types
 for await (const event of result.fullStream) {
-  switch (event.type) {
-    case "tool-call":
-      console.log(
-        `${event.subAgentName ? `[${event.subAgentName}] ` : ""}Tool called: ${event.data.toolName}`
-      );
-      break;
-    case "tool-result":
-      console.log(
-        `${event.subAgentName ? `[${event.subAgentName}] ` : ""}Tool result: ${event.data.result}`
-      );
-      break;
-    case "text-delta":
-      // Only appears if included in types array
-      console.log(`Text: ${event.data}`);
-      break;
-    case "reasoning":
-      // Only appears if included in types array
-      console.log(`Reasoning: ${event.data}`);
-      break;
+  if (event.type === "tool-call") {
+    if (event.subAgentName) {
+      console.log(`[${event.subAgentName}] Tool called: ${event.toolName}`);
+    }
+  } else if (event.type === "tool-result") {
+    if (event.subAgentName) {
+      console.log(`[${event.subAgentName}] Tool result:`, event.output);
+    }
+  } else if (event.type === "text-delta") {
+    // Only appears if included in types array
+    if (event.subAgentName) {
+      console.log(`[${event.subAgentName}] Text: ${event.text ?? event.delta ?? ""}`);
+    }
   }
 }
 ```
@@ -301,25 +334,24 @@ for await (const event of result.fullStream) {
 Identify which events come from sub-agents by checking for `subAgentId` and `subAgentName` properties:
 
 ```ts
-const result = await supervisorAgent.streamText("Create and edit content", {
-  fullStream: true,
-});
+const result = await supervisorAgent.streamText("Create and edit content");
 
 for await (const event of result.fullStream) {
-  // Check if this event is from a sub-agent
   if (event.subAgentId && event.subAgentName) {
-    console.log(`Event from sub-agent ${event.subAgentName}:`);
+    console.log(
+      `Event from sub-agent ${event.subAgentName} (path: ${event.agentPath?.join(" > ")})`
+    );
     console.log(`  Type: ${event.type}`);
-    console.log(`  Data:`, event.data);
-
-    // Filter by specific sub-agent
-    if (event.subAgentName === "WriterAgent") {
-      // Handle writer agent events specifically
-    }
-  } else {
-    // This is from the supervisor agent itself
-    console.log(`Supervisor event: ${event.type}`);
+    console.log(`  Payload:`, {
+      toolName: event.toolName,
+      output: event.output,
+      text: (event as { text?: string }).text,
+    });
+    continue;
   }
+
+  // This is from the supervisor agent itself
+  console.log(`Supervisor event: ${event.type}`);
 }
 ```
 
@@ -355,7 +387,7 @@ Provide a custom `systemMessage` to replace the default template:
 const supervisorAgent = new Agent({
   name: "Custom Supervisor",
   instructions: "This will be ignored when systemMessage is provided",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   subAgents: [writerAgent, editorAgent],
 
   supervisorConfig: {
@@ -404,8 +436,23 @@ supervisorConfig: {
 
 ```ts
 supervisorConfig: {
-  includeAgentsMemory: false; // Fresh context each interaction (default: true)
+  includeAgentsMemory: false; // Exclude prior sub-agent interactions from supervisor prompt (default: true)
 }
+```
+
+:::note `includeAgentsMemory` vs `memory: false`
+`includeAgentsMemory` only controls prompt construction for the supervisor. It does not disable conversation memory inside each sub-agent. If you need a stateless sub-agent, set `memory: false` on that sub-agent.
+:::
+
+**Stateless sub-agent:**
+
+```ts
+const writerAgent = new Agent({
+  name: "Writer",
+  instructions: "Write concise drafts.",
+  model: "openai/gpt-4o-mini",
+  memory: false,
+});
 ```
 
 **Configure event forwarding:**
@@ -483,26 +530,25 @@ This tool is automatically added to supervisor agents and handles delegation.
 
 ```ts
 import { Agent } from "@voltagent/core";
-import { openai } from "@ai-sdk/openai";
 
 // Create agents
 const writer = new Agent({
   name: "Writer",
   instructions: "Write creative stories",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
 });
 
 const translator = new Agent({
   name: "Translator",
   instructions: "Translate text accurately",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
 });
 
 // Create supervisor
 const supervisor = new Agent({
   name: "Supervisor",
   instructions: "Coordinate story writing and translation",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   subAgents: [writer, translator],
 });
 
@@ -775,27 +821,24 @@ When using `toUIMessageStream()`, subagent text appears as `data-subagent-stream
 ```ts
 const result = await supervisor.streamText("Create workout");
 
-// With text-delta forwarding enabled:
-// Subagent text chunks are accumulated and displayed as a collapsible box
-// with the subagent's name (e.g., "Workout Builder")
-
 for await (const message of result.toUIMessageStream()) {
-  // Message parts include grouped subagent output
-  // Rendered automatically in observability UI
+  // Message parts include grouped subagent output; each subagent chunk carries:
+  // subAgentId, subAgentName, executingAgent*, parentAgent*, agentPath
+  // These parts are emitted as `data-subagent-stream` entries.
 }
 ```
 
 **Event Types Reference:**
 
-| Event Type    | Description                      | Default         |
-| ------------- | -------------------------------- | --------------- |
-| `tool-call`   | Tool invocations                 | ✅ Included     |
-| `tool-result` | Tool results                     | ✅ Included     |
-| `text-delta`  | Text chunk generation            | ❌ NOT included |
-| `reasoning`   | Model reasoning (if available)   | ❌ NOT included |
-| `source`      | Retrieved sources (if available) | ❌ NOT included |
-| `error`       | Error events                     | ❌ NOT included |
-| `finish`      | Stream completion                | ❌ NOT included |
+| Event Type                                              | Description                              | Default         |
+| ------------------------------------------------------- | ---------------------------------------- | --------------- |
+| `tool-call`                                             | Tool invocations                         | ✅ Included     |
+| `tool-result`                                           | Tool results                             | ✅ Included     |
+| `text-delta`                                            | Text chunk generation                    | ❌ NOT included |
+| `reasoning-start` / `reasoning-delta` / `reasoning-end` | Model reasoning lifecycle (if available) | ❌ NOT included |
+| `source`                                                | Retrieved sources (if available)         | ❌ NOT included |
+| `error`                                                 | Error events                             | ❌ NOT included |
+| `finish`                                                | Stream completion                        | ❌ NOT included |
 
 ### Observability
 

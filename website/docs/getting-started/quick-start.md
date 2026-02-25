@@ -18,6 +18,9 @@ import EnterpriseCard from '@site/src/components/docs-widgets/EnterpriseCard';
 Build your first AI agent with VoltAgent. This guide covers creating an agent, connecting it to external events, running workflows, and deploying to production.
 
 Looking for full recipes? Check out the [Recipes & Guides](/recipes-and-guides/) section.
+Want a ready-made chat UI? See the [UI integration guides](/docs/ui/overview/) for AI SDK, CopilotKit, and Assistant UI starters.
+Need managed RAG? Try [VoltAgent Knowledge Base](/docs/rag/voltagent/) for document ingestion and retrieval.
+Using an AI coding assistant? See [Docs for AI Assistants](/docs/ai-assistants) for local skills or MCP access.
 
 <br/>
 
@@ -113,6 +116,10 @@ MISTRAL_API_KEY=your-api-key-here
   </TabItem>
 </Tabs>
 
+:::info model strings
+VoltAgent also supports `provider/model` strings like `openai/gpt-4o-mini`. If you use model strings, you do not need to import provider packages in your app. Just set the appropriate API key env vars.
+:::
+
 Now start the development server:
 
 <Tabs>
@@ -147,7 +154,7 @@ You should see the VoltAgent server startup message:
 ══════════════════════════════════════════════════
   ✓ HTTP Server:  http://localhost:3141
   ↪ Share it:    pnpm volt tunnel 3141 (secure HTTPS tunnel for teammates)
-     Docs: https://voltagent.dev/docs/deployment/local-tunnel/
+     Docs: https://voltagent.dev/deployment-docs/local-tunnel/
   ✓ Swagger UI:   http://localhost:3141/ui
 
   Test your agents with VoltOps Console: https://console.voltagent.dev
@@ -185,8 +192,8 @@ You should receive a response, you've successfully created your first basic AI a
 
 You now have a working AI agent that responds to messages. VoltAgent also supports event-driven workflows.
 
-- [VoltAgent Triggers](/docs/triggers/overview/) listen for external events like GitHub webhooks or cron schedules.
-- [Voltagent Actions](/docs/actions/overview/) send data to external services like Discord or Slack.
+- [VoltAgent Triggers](/actions-triggers-docs/triggers/overview) listen for external events like GitHub webhooks or cron schedules.
+- [Voltagent Actions](/actions-triggers-docs/actions/overview) send data to external services like Discord or Slack.
 
 Together, they let your agent react to events and take actions automatically.
 
@@ -374,7 +381,7 @@ The command prints an HTTPS URL (for example `https://your-tunnel-address.tunnel
 npx @voltagent/cli tunnel 3141
 ```
 
-See the [Local Tunnel guide](https://voltagent.dev/docs/deployment/local-tunnel/) for details.
+See the [Local Tunnel guide](https://voltagent.dev/deployment-docs/local-tunnel/) for details.
 
 </StepSection>
 
@@ -415,6 +422,7 @@ The `build` script invokes **tsdown**, which bundles your TypeScript entrypoint 
 
 ## Next Steps
 
+- [Deploy to Production](/deployment-docs/voltops) - Deploy your agent with VoltOps Deploy
 - [Tutorial](/tutorial/introduction) - Build agents with tools, memory, and integrations
 - [Agent Configuration](../agents/overview.md) - Agent options and settings
 - [Memory](../agents/memory/overview.md) - Conversation history and persistence

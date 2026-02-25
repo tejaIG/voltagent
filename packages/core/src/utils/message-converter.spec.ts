@@ -93,6 +93,28 @@ describe("convertResponseMessagesToUIMessages", () => {
     });
   });
 
+  it("keeps empty reasoning when OpenAI item metadata is present", async () => {
+    const messages: AssistantModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "",
+            providerOptions: { openai: { itemId: "rs_123" } },
+          },
+        ],
+      },
+    ];
+
+    const result = await convertResponseMessagesToUIMessages(messages);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].parts).toEqual([
+      { type: "reasoning", text: "", providerMetadata: { openai: { itemId: "rs_123" } } },
+    ]);
+  });
+
   it("should handle tool calls", async () => {
     const messages: AssistantModelMessage[] = [
       {
@@ -117,6 +139,39 @@ describe("convertResponseMessagesToUIMessages", () => {
       toolCallId: "call-123",
       state: "input-available",
       input: { operation: "add", a: 1, b: 2 },
+    });
+  });
+
+  it("should map tool approval requests to tool parts", async () => {
+    const messages: AssistantModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-approve",
+            toolName: "getWeather",
+            input: { location: "Rome" },
+          },
+          {
+            type: "tool-approval-request",
+            approvalId: "approval-1",
+            toolCallId: "call-approve",
+          },
+        ],
+      },
+    ];
+
+    const result = await convertResponseMessagesToUIMessages(messages);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].parts).toHaveLength(1);
+    expect(result[0].parts[0]).toEqual({
+      type: "tool-getWeather",
+      toolCallId: "call-approve",
+      state: "approval-requested",
+      input: { location: "Rome" },
+      approval: { id: "approval-1" },
     });
   });
 
@@ -509,6 +564,27 @@ describe("convertModelMessagesToUIMessages (AI SDK v5)", () => {
     expect(typeof (ui[0].parts[1] as any).url).toBe("string");
   });
 
+  it("keeps empty reasoning parts with OpenAI metadata in model conversion", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "",
+            providerOptions: { openai: { itemId: "rs_meta" } },
+          } as any,
+        ],
+      },
+    ];
+
+    const ui = convertModelMessagesToUIMessages(messages);
+    expect(ui).toHaveLength(1);
+    expect(ui[0].parts).toEqual([
+      { type: "reasoning", text: "", providerMetadata: { openai: { itemId: "rs_meta" } } },
+    ]);
+  });
+
   it("maps image parts to UI file parts (url)", () => {
     const messages: ModelMessage[] = [
       {
@@ -632,6 +708,48 @@ describe("convertModelMessagesToUIMessages (AI SDK v5)", () => {
     });
   });
 
+  it("applies tool approval responses to existing tool parts", () => {
+    const messages: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-approval",
+            toolName: "getWeather",
+            input: { location: "Rome" },
+          },
+          {
+            type: "tool-approval-request",
+            approvalId: "approval-1",
+            toolCallId: "call-approval",
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-approval-response",
+            approvalId: "approval-1",
+            approved: true,
+          },
+        ],
+      },
+    ];
+
+    const ui = convertModelMessagesToUIMessages(messages);
+    expect(ui).toHaveLength(1);
+    expect(ui[0].parts).toHaveLength(1);
+    expect(ui[0].parts[0]).toEqual({
+      type: "tool-getWeather",
+      toolCallId: "call-approval",
+      state: "approval-responded",
+      input: { location: "Rome" },
+      approval: { id: "approval-1", approved: true },
+    });
+  });
+
   it("should correctly handle tool messages for AI SDK convertToModelMessages", async () => {
     // Simulate the response messages from an LLM that called a tool
     const responseMessages: (AssistantModelMessage | ToolModelMessage)[] = [
@@ -712,7 +830,7 @@ describe("convertModelMessagesToUIMessages (AI SDK v5)", () => {
     ];
 
     // Convert to model messages for the next API call
-    const modelMessages = convertToModelMessages(conversationHistory);
+    const modelMessages = await convertToModelMessages(conversationHistory);
 
     // The structure depends on how convertResponseMessagesToUIMessages consolidates messages
     // Check that we have the expected roles in order

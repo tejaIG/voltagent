@@ -3,10 +3,9 @@
  */
 
 /**
- * Routes that don't require authentication by default
- * These are typically used by VoltOps and management tools
+ * Routes that don't require authentication by default (legacy auth)
  */
-export const DEFAULT_PUBLIC_ROUTES = [
+export const DEFAULT_LEGACY_PUBLIC_ROUTES = [
   // Agent management endpoints (VoltOps uses these)
   "GET /agents", // List all agents
   "GET /agents/:id", // Get agent details
@@ -14,6 +13,9 @@ export const DEFAULT_PUBLIC_ROUTES = [
   // Workflow management endpoints
   "GET /workflows", // List all workflows
   "GET /workflows/:id", // Get workflow details
+
+  // Tool management endpoints
+  "GET /tools", // List all tools
 
   // API documentation
   "GET /doc", // OpenAPI spec
@@ -29,6 +31,56 @@ export const DEFAULT_PUBLIC_ROUTES = [
   "GET /agents/:id/card",
 ];
 
+// Backward compatibility alias
+export const DEFAULT_PUBLIC_ROUTES = DEFAULT_LEGACY_PUBLIC_ROUTES;
+
+/**
+ * Routes that require console access when authNext is enabled
+ */
+export const DEFAULT_CONSOLE_ROUTES = [
+  // Agent management endpoints (VoltOps uses these)
+  "GET /agents", // List all agents
+  "GET /agents/:id", // Get agent details
+
+  // Workflow management endpoints
+  "GET /workflows", // List all workflows
+  "GET /workflows/:id", // Get workflow details
+
+  // Tool management endpoints
+  "GET /tools", // List all tools
+
+  // API documentation
+  "GET /doc", // OpenAPI spec
+  "GET /ui", // Swagger UI
+  "GET /", // Landing page
+
+  // MCP (public discovery)
+  "GET /mcp/servers",
+  "GET /mcp/servers/:serverId",
+  "GET /mcp/servers/:serverId/tools",
+
+  // A2A (agent-to-agent discovery)
+  "GET /agents/:id/card",
+
+  "GET /agents/:id/history",
+  "GET /agents/:id/workspace",
+  "GET /agents/:id/workspace/ls",
+  "GET /agents/:id/workspace/read",
+  "GET /agents/:id/workspace/skills",
+  "GET /agents/:id/workspace/skills/:skillId",
+  "GET /workflows/executions",
+  "GET /workflows/:id/executions/:executionId/state",
+  "GET /api/logs",
+  "POST /setup-observability",
+  "/observability/*",
+  "GET /updates",
+  "POST /updates",
+  "POST /updates/:packageName",
+  "WS /ws",
+  "WS /ws/logs",
+  "WS /ws/observability/**",
+];
+
 /**
  * Routes that require authentication by default
  * These endpoints execute operations, modify state, or access sensitive data
@@ -40,22 +92,40 @@ export const PROTECTED_ROUTES = [
   "POST /agents/:id/text", // generateText
   "POST /agents/:id/stream", // streamText
   "POST /agents/:id/chat", // chatStream
+  "GET /agents/:id/chat/:conversationId/stream", // resumeChatStream
   "POST /agents/:id/object", // generateObject
   "POST /agents/:id/stream-object", // streamObject
+  "GET /agents/:id/workspace", // workspace info
+  "GET /agents/:id/workspace/ls", // workspace list files
+  "GET /agents/:id/workspace/read", // workspace read file
+  "GET /agents/:id/workspace/skills", // workspace list skills
+  "GET /agents/:id/workspace/skills/:skillId", // workspace skill
   "WS /ws/agents/:id", // WebSocket connection
+
+  // ========================================
+  // TOOL EXECUTION (User Data)
+  // ========================================
+  "POST /tools/:name/execute",
 
   // ========================================
   // WORKFLOW EXECUTION (User Data)
   // ========================================
   "POST /workflows/:id/run", // Run workflow
   "POST /workflows/:id/stream", // Stream workflow execution
+  "GET /workflows/:id/executions/:executionId/stream", // Attach workflow stream execution
 
   // ========================================
   // WORKFLOW CONTROL (State Modification)
   // ========================================
   "POST /workflows/:id/executions/:executionId/suspend", // Suspend execution
   "POST /workflows/:id/executions/:executionId/resume", // Resume execution
+  "POST /workflows/:id/executions/:executionId/replay", // Replay execution from historical step
   "POST /workflows/:id/executions/:executionId/cancel", // Cancel execution
+
+  // ========================================
+  // MEMORY (User Data)
+  // ========================================
+  "/api/memory/*", // All memory endpoints (GET/POST/PATCH/DELETE)
 
   // ========================================
   // OBSERVABILITY (Admin/Internal Tooling)
@@ -163,7 +233,7 @@ export function requiresAuth(
   defaultPrivate?: boolean,
 ): boolean {
   // Check if it's a default public route
-  for (const publicRoute of DEFAULT_PUBLIC_ROUTES) {
+  for (const publicRoute of DEFAULT_LEGACY_PUBLIC_ROUTES) {
     if (publicRoute.includes(" ")) {
       // Route with method specified
       const [routeMethod, routePath] = publicRoute.split(" ");

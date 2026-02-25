@@ -1,5 +1,181 @@
 # @voltagent/postgres
 
+## 2.1.2
+
+### Patch Changes
+
+- [#1082](https://github.com/VoltAgent/voltagent/pull/1082) [`73cf1d3`](https://github.com/VoltAgent/voltagent/commit/73cf1d32c5ffdfd3197cc9b0661350449aca2b3a) Thanks [@omeraplak](https://github.com/omeraplak)! - Fix workflow state persistence parity across SQL adapters.
+
+  This update persists and returns `input`, `context`, and top-level `workflowState` in workflow state operations. It also ensures suspended workflow state queries include `events`, `output`, and `cancellation`, and adds adapter migrations/column additions where needed.
+
+## 2.1.1
+
+### Patch Changes
+
+- [#1040](https://github.com/VoltAgent/voltagent/pull/1040) [`5e54d3b`](https://github.com/VoltAgent/voltagent/commit/5e54d3b54e2823479788617ce0a1bb5211260f9b) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add multi-tenant filters to workflow execution listing (`/workflows/executions`)
+
+  You can now filter workflow execution history by `userId` and metadata fields in addition to
+  existing filters (`workflowId`, `status`, `from`, `to`, `limit`, `offset`).
+
+  ### What's New
+  - Added `userId` filter support for workflow run queries.
+  - Added metadata filtering support:
+    - `metadata` as URL-encoded JSON object
+    - `metadata.<key>` query params (for example: `metadata.tenantId=acme`)
+  - Added status aliases for compatibility:
+    - `success` -> `completed`
+    - `pending` -> `running`
+  - Implemented consistently across storage adapters:
+    - In-memory
+    - PostgreSQL
+    - LibSQL
+    - Supabase
+    - Cloudflare D1
+    - Managed Memory (`@voltagent/voltagent-memory`)
+  - Updated server docs and route descriptions to include new filters.
+
+  ### TypeScript Example
+
+  ```ts
+  const params = new URLSearchParams({
+    workflowId: "order-approval",
+    status: "completed",
+    userId: "user-123",
+    "metadata.tenantId": "acme",
+    "metadata.region": "eu",
+    limit: "20",
+    offset: "0",
+  });
+
+  const response = await fetch(`http://localhost:3141/workflows/executions?${params.toString()}`);
+  const data = await response.json();
+  ```
+
+  ### cURL Examples
+
+  ```bash
+  # Filter by workflow + user + metadata key
+  curl "http://localhost:3141/workflows/executions?workflowId=order-approval&userId=user-123&metadata.tenantId=acme&status=completed&limit=20&offset=0"
+  ```
+
+  ```bash
+  # Filter by metadata JSON object (URL-encoded)
+  curl "http://localhost:3141/workflows/executions?metadata=%7B%22tenantId%22%3A%22acme%22%2C%22region%22%3A%22eu%22%7D"
+  ```
+
+## 2.1.0
+
+### Minor Changes
+
+- [#1013](https://github.com/VoltAgent/voltagent/pull/1013) [`a35626a`](https://github.com/VoltAgent/voltagent/commit/a35626a29a9cfdc2375ac4276d58f87e0ef79f68) Thanks [@fengyun99](https://github.com/fengyun99)! - The SQL statement has been modified. Previously, the query returned the earliest messages instead of the most recent ones.
+
+### Patch Changes
+
+- [#1016](https://github.com/VoltAgent/voltagent/pull/1016) [`238f87f`](https://github.com/VoltAgent/voltagent/commit/238f87ff66ce16c8b37a1d599958563516819102) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: validate UI/response messages and keep streaming response message IDs consistent across UI streams - #1010
+  fix(postgres/supabase): upsert conversation messages by (conversation_id, message_id) to avoid duplicate insert failures
+
+## 2.0.3
+
+### Patch Changes
+
+- [`b0fae14`](https://github.com/VoltAgent/voltagent/commit/b0fae149569a65439ce5f6e7f8039be6b97086e1) Thanks [@omeraplak](https://github.com/omeraplak)! - chore: bump version
+
+## 2.0.2
+
+### Patch Changes
+
+- [`f6ffb8a`](https://github.com/VoltAgent/voltagent/commit/f6ffb8ae0fd95fbe920058e707d492d8c21b2505) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: VoltAgent 2.x (AI SDK v6)
+
+  VoltAgent 2.x aligns the framework with AI SDK v6 and adds new features. VoltAgent APIs are compatible, but if you call AI SDK directly, follow the upstream v6 migration guide.
+
+  Migration summary (1.x -> 2.x):
+  1. Update VoltAgent packages
+  - `npm run volt update`
+  - If the CLI is missing: `npx @voltagent/cli init` then `npm run volt update`
+  2. Align AI SDK packages
+  - `pnpm add ai@^6 @ai-sdk/provider@^3 @ai-sdk/provider-utils@^4 @ai-sdk/openai@^3`
+  - If you use UI hooks, upgrade `@ai-sdk/react` to `^3`
+  3. Structured output
+  - `generateObject` and `streamObject` are deprecated in VoltAgent 2.x
+  - Use `generateText` / `streamText` with `Output.object(...)`
+
+  Full migration guide: https://voltagent.dev/docs/getting-started/migration-guide/
+
+- Updated dependencies [[`f6ffb8a`](https://github.com/VoltAgent/voltagent/commit/f6ffb8ae0fd95fbe920058e707d492d8c21b2505)]:
+  - @voltagent/internal@1.0.2
+
+## 2.0.1
+
+### Patch Changes
+
+- [`c3943aa`](https://github.com/VoltAgent/voltagent/commit/c3943aa89a7bee113d99404ecd5a81a62bc159c2) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: VoltAgent 2.x (AI SDK v6)
+
+  VoltAgent 2.x aligns the framework with AI SDK v6 and adds new features. VoltAgent APIs are compatible, but if you call AI SDK directly, follow the upstream v6 migration guide.
+
+  Migration summary (1.x -> 2.x):
+  1. Update VoltAgent packages
+  - `npm run volt update`
+  - If the CLI is missing: `npx @voltagent/cli init` then `npm run volt update`
+  2. Align AI SDK packages
+  - `pnpm add ai@^6 @ai-sdk/provider@^3 @ai-sdk/provider-utils@^4 @ai-sdk/openai@^3`
+  - If you use UI hooks, upgrade `@ai-sdk/react` to `^3`
+  3. Structured output
+  - `generateObject` and `streamObject` are deprecated in VoltAgent 2.x
+  - Use `generateText` / `streamText` with `Output.object(...)`
+
+  Full migration guide: https://voltagent.dev/docs/getting-started/migration-guide/
+
+- Updated dependencies [[`c3943aa`](https://github.com/VoltAgent/voltagent/commit/c3943aa89a7bee113d99404ecd5a81a62bc159c2)]:
+  - @voltagent/internal@1.0.1
+
+## 2.0.0
+
+### Major Changes
+
+- [#894](https://github.com/VoltAgent/voltagent/pull/894) [`ee05549`](https://github.com/VoltAgent/voltagent/commit/ee055498096b1b99015a8362903712663969677f) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: VoltAgent 2.x (AI SDK v6)
+
+  VoltAgent 2.x aligns the framework with AI SDK v6 and adds new features. VoltAgent APIs are compatible, but if you call AI SDK directly, follow the upstream v6 migration guide.
+
+  Migration summary (1.x -> 2.x):
+  1. Update VoltAgent packages
+  - `npm run volt update`
+  - If the CLI is missing: `npx @voltagent/cli init` then `npm run volt update`
+  2. Align AI SDK packages
+  - `pnpm add ai@^6 @ai-sdk/provider@^3 @ai-sdk/provider-utils@^4 @ai-sdk/openai@^3`
+  - If you use UI hooks, upgrade `@ai-sdk/react` to `^3`
+  3. Structured output
+  - `generateObject` and `streamObject` are deprecated in VoltAgent 2.x
+  - Use `generateText` / `streamText` with `Output.object(...)`
+
+  Full migration guide: https://voltagent.dev/docs/getting-started/migration-guide/
+
+### Patch Changes
+
+- Updated dependencies [[`ee05549`](https://github.com/VoltAgent/voltagent/commit/ee055498096b1b99015a8362903712663969677f)]:
+  - @voltagent/core@2.0.0
+  - @voltagent/internal@1.0.0
+
+## 1.1.4
+
+### Patch Changes
+
+- [#845](https://github.com/VoltAgent/voltagent/pull/845) [`5432f13`](https://github.com/VoltAgent/voltagent/commit/5432f13bddebd869522ebffbedd9843b4476f08b) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: workflow execution listing - #844
+
+  Added a unified way to list workflow runs so teams can audit executions across every storage backend and surface them via the API and console.
+
+  ## What changed
+  - `queryWorkflowRuns` now exists on all memory adapters (in-memory, libsql, Postgres, Supabase, voltagent-memory) with filters for `workflowId`, `status`, `from`, `to`, `limit`, and `offset`.
+  - Server routes are consolidated under `/workflows/executions` (no path param needed); `GET /workflows/:id` also returns the workflow result schema for typed clients. Handler naming is standardized to `listWorkflowRuns`.
+  - VoltOps Console observability panel lists the new endpoint; REST docs updated with query params and sample responses. New unit tests cover handlers and every storage adapter.
+
+  ## Quick fetch
+
+  ```ts
+  await fetch(
+    "http://localhost:3141/workflows/executions?workflowId=expense-approval&status=completed&from=2024-01-01&to=2024-01-31&limit=20&offset=0"
+  );
+  ```
+
 ## 1.1.3
 
 ### Patch Changes
@@ -270,7 +446,7 @@
   ## New: PostgresVectorAdapter
 
   ```typescript
-  import { Agent, Memory, AiSdkEmbeddingAdapter } from "@voltagent/core";
+  import { Agent, Memory } from "@voltagent/core";
   import { PostgresMemoryAdapter, PostgresVectorAdapter } from "@voltagent/postgres";
   import { openai } from "@ai-sdk/openai";
 
@@ -278,7 +454,7 @@
     storage: new PostgresMemoryAdapter({
       connectionString: process.env.DATABASE_URL,
     }),
-    embedding: new AiSdkEmbeddingAdapter(openai.embedding("text-embedding-3-small")),
+    embedding: "openai/text-embedding-3-small",
     vector: new PostgresVectorAdapter({
       connectionString: process.env.DATABASE_URL,
     }),

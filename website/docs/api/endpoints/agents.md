@@ -98,11 +98,18 @@ Generate a text response from an agent synchronously.
     "seed": 42,
     "stopSequences": ["\n\n"],
     "providerOptions": {
-      "reasoningEffort": "medium"
+      "openai": {
+        "reasoningEffort": "medium"
+      }
     },
     "context": {
       "role": "admin",
       "tier": "premium"
+    },
+    "conversationPersistence": {
+      "mode": "step",
+      "debounceMs": 200,
+      "flushOnToolResult": true
     }
   }
 }
@@ -183,6 +190,9 @@ Generate a text response from an agent synchronously.
 | `stopSequences` | string[] | - | Stop generation sequences |
 | `providerOptions` | object | - | Provider-specific options |
 | `context` | object | - | Dynamic agent context |
+| `conversationPersistence.mode` | string | `"step"` | Persistence strategy: `"step"` or `"finish"` |
+| `conversationPersistence.debounceMs` | number | `200` | Debounce interval for step checkpoint persistence |
+| `conversationPersistence.flushOnToolResult` | boolean | `true` | Flush immediately on `tool-result`/`tool-error` in step mode |
 
 **Response:**
 
@@ -219,24 +229,24 @@ curl -X POST http://localhost:3141/agents/assistant/text \
   }'
 ```
 
-### Using experimental_output for Structured Generation
+### Using output for Structured Generation
 
-The `/text`, `/stream`, and `/chat` endpoints support structured output generation using the `experimental_output` option. Unlike the `/object` endpoint, this allows you to get structured data **while maintaining full tool calling capabilities**.
+The `/text`, `/stream`, and `/chat` endpoints support structured output generation using the `output` option. Unlike the `/object` endpoint, this allows you to get structured data **while maintaining full tool calling capabilities**.
 
 **Key Differences:**
 
-| Feature           | `/object` endpoint | `experimental_output` with `/text` |
-| ----------------- | ------------------ | ---------------------------------- |
-| Structured output | ✅                 | ✅                                 |
-| Tool calling      | ❌                 | ✅                                 |
+| Feature           | `/object` endpoint | `output` with `/text` |
+| ----------------- | ------------------ | --------------------- |
+| Structured output | ✅                 | ✅                    |
+| Tool calling      | ❌                 | ✅                    |
 
-**Request Body with experimental_output:**
+**Request Body with output:**
 
 ```json
 {
   "input": "Create a recipe for pasta carbonara",
   "options": {
-    "experimental_output": {
+    "output": {
       "type": "object",
       "schema": {
         "type": "object",
@@ -266,7 +276,7 @@ The `/text`, `/stream`, and `/chat` endpoints support structured output generati
   "success": true,
   "data": {
     "text": "Here is a classic pasta carbonara recipe...",
-    "experimental_output": {
+    "output": {
       "name": "Classic Pasta Carbonara",
       "ingredients": [
         "400g spaghetti",
@@ -306,7 +316,7 @@ curl -X POST http://localhost:3141/agents/assistant/text \
   -d '{
     "input": "Create a recipe for pasta carbonara",
     "options": {
-      "experimental_output": {
+      "output": {
         "type": "object",
         "schema": {
           "type": "object",
@@ -332,7 +342,7 @@ curl -X POST http://localhost:3141/agents/assistant/text \
 
 **When to Use:**
 
-- Use `experimental_output` when you need structured output AND tool calling
+- Use `output` when you need structured output AND tool calling
 - Use `/object` endpoint for simple data extraction without tools
 
 ## Stream Text (Raw)
@@ -347,13 +357,13 @@ Generate a text response and stream raw fullStream data via Server-Sent Events (
 
 The stream returns raw AI SDK fullStream events. Each event is a JSON object containing the complete event data.
 
-**Event Types:**
+**Common Event Types:**
 
-- `text-delta` - Incremental text chunks with delta content
-- `tool-call` - Tool invocation events
-- `tool-result` - Tool execution results
-- `finish` - Stream completion with usage statistics
-- `error` - Error events if something goes wrong
+- Lifecycle: `start`, `start-step`, `finish-step`, `finish`, `abort`, `error`
+- Text: `text-start`, `text-delta`, `text-end`
+- Reasoning: `reasoning-start`, `reasoning-delta`, `reasoning-end` (if available from the selected model/provider)
+- Tools: `tool-input-start`, `tool-input-delta`, `tool-input-end`, `tool-call`, `tool-result`, `tool-error`
+- Other: `source`, `file`, `raw`
 
 **Use Cases:**
 
@@ -402,6 +412,15 @@ while (true) {
       const eventData = JSON.parse(line.slice(6));
       // Handle different event types
       switch (eventData.type) {
+        case "reasoning-start":
+          console.log("Reasoning started:", eventData.id);
+          break;
+        case "reasoning-delta":
+          console.log("Reasoning:", eventData.delta);
+          break;
+        case "reasoning-end":
+          console.log("Reasoning completed:", eventData.id);
+          break;
         case "text-delta":
           console.log("Text:", eventData.delta);
           break;

@@ -60,6 +60,37 @@ describe("Tool", () => {
       expect(tool.execute).toEqual(options.execute);
     });
 
+    it("should keep needsApproval when provided", () => {
+      const options = {
+        name: "approvalTool",
+        description: "Requires approval",
+        parameters: z.object({ command: z.string() }),
+        needsApproval: true,
+        execute: vi.fn(),
+      };
+
+      const tool = new Tool(options);
+
+      expect(tool.needsApproval).toBe(true);
+    });
+
+    it("should keep hooks when provided", () => {
+      const onStart = vi.fn();
+      const onEnd = vi.fn();
+      const options = {
+        name: "hookedTool",
+        description: "Hooked tool",
+        parameters: z.object({}),
+        execute: vi.fn(),
+        hooks: { onStart, onEnd },
+      };
+
+      const tool = new Tool(options);
+
+      expect(tool.hooks?.onStart).toBe(onStart);
+      expect(tool.hooks?.onEnd).toBe(onEnd);
+    });
+
     it("should throw error if name is missing", () => {
       const options = {
         parameters: z.object({}),

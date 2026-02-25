@@ -1,5 +1,2521 @@
 # @voltagent/core
 
+## 2.6.1
+
+### Patch Changes
+
+- [#1103](https://github.com/VoltAgent/voltagent/pull/1103) [`edd7181`](https://github.com/VoltAgent/voltagent/commit/edd718147e0493cebd2ee5145d239577ee73139b) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: preserve getter-based `fullStream` tee behavior after startup probing in `streamText`/`streamObject`
+
+  This prevents `TypeError [ERR_INVALID_STATE]: Invalid state: ReadableStream is locked` when SDK consumers iterate `result.fullStream` while other result accessors (such as `result.text` or UI stream helpers) are also consuming the stream.
+
+## 2.6.0
+
+### Minor Changes
+
+- [#1100](https://github.com/VoltAgent/voltagent/pull/1100) [`314ed40`](https://github.com/VoltAgent/voltagent/commit/314ed4096de7c4e1da551a5716fcd21690db3c1a) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add workflow observer/watch APIs for stream results
+
+  ### What's New
+  - Added run-level observer APIs on `WorkflowStreamResult`:
+    - `watch(cb)`
+    - `watchAsync(cb)`
+    - `observeStream()`
+    - `streamLegacy()`
+  - These APIs are now available on:
+    - `workflow.stream(...)`
+    - `workflow.timeTravelStream(...)`
+    - resumed stream results returned from `.resume(...)`
+  - Added test coverage for event ordering, unsubscribe behavior, multiple watchers, callback isolation, and `observeStream()` close semantics.
+
+  ### SDK Example
+
+  ```ts
+  const stream = workflow.stream({ value: 3 });
+
+  const unwatch = stream.watch((event) => {
+    console.log("[watch]", event.type, event.from);
+  });
+
+  const unwatchAsync = await stream.watchAsync(async (event) => {
+    if (event.type === "workflow-error") {
+      await notifyOps(event);
+    }
+  });
+
+  const reader = stream.observeStream().getReader();
+  const observerTask = (async () => {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      console.log("[observeStream]", value.type);
+    }
+  })();
+
+  for await (const event of stream) {
+    console.log("[main iterator]", event.type);
+  }
+
+  unwatch();
+  unwatchAsync();
+  await observerTask;
+
+  const state = await stream.streamLegacy().getWorkflowState();
+  console.log("final status:", state?.status);
+  ```
+
+  ### Time Travel Stream Example
+
+  ```ts
+  const replayStream = workflow.timeTravelStream({
+    executionId: sourceExecutionId,
+    stepId: "step-approval",
+  });
+
+  const stopReplayWatch = replayStream.watch((event) => {
+    console.log("[replay]", event.type, event.from);
+  });
+
+  for await (const event of replayStream) {
+    console.log("[replay iterator]", event.type);
+  }
+
+  stopReplayWatch();
+  ```
+
+- [#1102](https://github.com/VoltAgent/voltagent/pull/1102) [`7f923d2`](https://github.com/VoltAgent/voltagent/commit/7f923d2e4032a39cdfa430469afbdeafaac39b1c) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add workflow execution primitives (`bail`, `abort`, `getStepResult`, `getInitData`)
+
+  ### What's New
+
+  Step execution context now includes four new primitives:
+  - `bail(result?)`: complete the workflow early with a custom final result
+  - `abort()`: cancel the workflow immediately
+  - `getStepResult(stepId)`: get a prior step output directly (returns `null` if not available)
+  - `getInitData()`: get the original workflow input (stable across resume paths)
+
+  These primitives are available in all step contexts, including nested step flows.
+
+  ### Example: Early Complete with `bail`
+
+  ```ts
+  const workflow = createWorkflowChain({
+    id: "bail-demo",
+    input: z.object({ amount: z.number() }),
+    result: z.object({ status: z.string() }),
+  })
+    .andThen({
+      id: "risk-check",
+      execute: async ({ data, bail }) => {
+        if (data.amount > 10_000) {
+          bail({ status: "rejected" });
+        }
+        return { status: "approved" };
+      },
+    })
+    .andThen({
+      id: "never-runs-on-bail",
+      execute: async () => ({ status: "approved" }),
+    });
+  ```
+
+  ### Example: Cancel with `abort`
+
+  ```ts
+  const workflow = createWorkflowChain({
+    id: "abort-demo",
+    input: z.object({ requestId: z.string() }),
+    result: z.object({ done: z.boolean() }),
+  })
+    .andThen({
+      id: "authorization",
+      execute: async ({ abort }) => {
+        abort(); // terminal status: cancelled
+      },
+    })
+    .andThen({
+      id: "never-runs-on-abort",
+      execute: async () => ({ done: true }),
+    });
+  ```
+
+  ### Example: Use `getStepResult` + `getInitData`
+
+  ```ts
+  const workflow = createWorkflowChain({
+    id: "introspection-demo",
+    input: z.object({ userId: z.string(), value: z.number() }),
+    result: z.object({ total: z.number(), userId: z.string() }),
+  })
+    .andThen({
+      id: "step-1",
+      execute: async ({ data }) => ({ partial: data.value + 1 }),
+    })
+    .andThen({
+      id: "step-2",
+      execute: async ({ getStepResult, getInitData }) => {
+        const s1 = getStepResult<{ partial: number }>("step-1");
+        const init = getInitData();
+
+        return {
+          total: (s1?.partial ?? 0) + init.value,
+          userId: init.userId,
+        };
+      },
+    });
+  ```
+
+## 2.5.0
+
+### Minor Changes
+
+- [#1097](https://github.com/VoltAgent/voltagent/pull/1097) [`e15bb6e`](https://github.com/VoltAgent/voltagent/commit/e15bb6e6584e179b1a69925b597557402d957325) Thanks [@omeraplak](https://github.com/omeraplak)! - Add `startAsync()` to workflow and workflow chain APIs for fire-and-forget execution.
+
+  `startAsync()` starts a workflow run in the background and returns `{ executionId, workflowId, startAt }` immediately. The run keeps existing execution semantics, respects provided `executionId`, and persists terminal states in memory for later inspection.
+
+  Also adds workflow documentation updates with `startAsync()` usage examples in the workflow overview and streaming docs.
+
+- [#1099](https://github.com/VoltAgent/voltagent/pull/1099) [`160e60b`](https://github.com/VoltAgent/voltagent/commit/160e60b29603146211b51a7962ad770202feacb5) Thanks [@omeraplak](https://github.com/omeraplak)! - Add workflow time-travel and deterministic replay APIs.
+
+  New APIs:
+  - `workflow.timeTravel(options)`
+  - `workflow.timeTravelStream(options)`
+  - `workflowChain.timeTravel(options)`
+  - `workflowChain.timeTravelStream(options)`
+
+  `timeTravel` replays a historical execution from a selected step with a new execution ID, preserving the original execution history. Replay runs can optionally override selected-step input (`inputData`), resume payload (`resumeData`), and shared workflow state (`workflowStateOverride`).
+
+  Replay lineage metadata is now persisted on workflow state records:
+  - `replayedFromExecutionId`
+  - `replayFromStepId`
+
+  New public type exports from `@voltagent/core` include `WorkflowTimeTravelOptions`.
+
+  Also adds workflow documentation and usage examples for deterministic replay in overview, suspend/resume, and streaming docs.
+
+  Adds REST API documentation for replay endpoint `POST /workflows/:id/executions/:executionId/replay`, including request/response details and both cURL and JavaScript (`fetch`) code examples for default replay and replay with overrides (`inputData`, `resumeData`, `workflowStateOverride`).
+
+- [#1098](https://github.com/VoltAgent/voltagent/pull/1098) [`b610ec6`](https://github.com/VoltAgent/voltagent/commit/b610ec6ae335980e73f8a144e3e8a509e9da8265) Thanks [@omeraplak](https://github.com/omeraplak)! - Add workflow restart and crash-recovery APIs.
+
+  New APIs:
+  - `workflow.restart(executionId, options?)`
+  - `workflow.restartAllActive()`
+  - `workflowChain.restart(executionId, options?)`
+  - `workflowChain.restartAllActive()`
+  - `WorkflowRegistry.restartWorkflowExecution(workflowId, executionId, options?)`
+  - `WorkflowRegistry.restartAllActiveWorkflowRuns(options?)`
+
+  The workflow runtime now persists running checkpoints during execution, including step progress, shared workflow state, context, and usage snapshots, so interrupted runs in `running` state can be recovered deterministically.
+
+  New public types are now exported from `@voltagent/core` for consumer annotations, including `WorkflowRestartAllResult` and `WorkflowRestartCheckpoint`.
+
+  Also adds docs for restart/crash-recovery usage under workflow overview and suspend/resume docs.
+
+## 2.4.5
+
+### Patch Changes
+
+- [#1088](https://github.com/VoltAgent/voltagent/pull/1088) [`bb7f3f9`](https://github.com/VoltAgent/voltagent/commit/bb7f3f9fba9ddf9264f0d599a3336253856b204a) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: preserve stream output after startup probe on ReadableStream providers
+
+  `Agent.streamText()` and `Agent.streamObject()` now probe stream startup using a tee'd branch instead of consuming and cancelling the original `fullStream`.
+
+  This prevents early stream interruption where some providers could emit reasoning events and then terminate before forwarding final `text-delta` output to consumers.
+
+## 2.4.4
+
+### Patch Changes
+
+- [#1085](https://github.com/VoltAgent/voltagent/pull/1085) [`f275daf`](https://github.com/VoltAgent/voltagent/commit/f275dafffa16e80deba391ce015fba6f6d6cd876) Thanks [@omeraplak](https://github.com/omeraplak)! - Fix workflow execution filtering by persisted metadata across adapters.
+  - Persist `options.metadata` on workflow execution state so `/workflows/executions` filters can match tenant/user metadata.
+  - Preserve existing execution metadata when updating cancelled/error workflow states.
+  - Accept `options.metadata` in server workflow execution request schema.
+  - Fix LibSQL and Cloudflare D1 JSON metadata query comparisons for `metadata` and `metadata.<key>` filters.
+
+- [#1084](https://github.com/VoltAgent/voltagent/pull/1084) [`95ad610`](https://github.com/VoltAgent/voltagent/commit/95ad61091f0f42961b2546457d858e590fd4dfa3) Thanks [@omeraplak](https://github.com/omeraplak)! - Add stream attach support for in-progress workflow executions.
+  - Add `GET /workflows/:id/executions/:executionId/stream` to attach to an active workflow SSE stream.
+  - Add replay support for missed SSE events via `fromSequence` and `Last-Event-ID`.
+  - Keep `POST /workflows/:id/stream` behavior unchanged for starting new executions.
+  - Ensure streamed workflow resume uses a fresh suspend controller so attach clients continue receiving events after resume.
+
+## 2.4.3
+
+### Patch Changes
+
+- [#1078](https://github.com/VoltAgent/voltagent/pull/1078) [`fbce8aa`](https://github.com/VoltAgent/voltagent/commit/fbce8aa0dbadf50d7e19ec54ab156a2fa86170c0) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: persist workflow context mutations across steps and downstream agents/tools
+
+  Workflows now consistently use the execution context map when building step state.
+  This ensures context written in one step is visible in later steps and in `andAgent` calls.
+
+  Also aligns workflow event/stream context payloads with the normalized runtime context.
+
+## 2.4.2
+
+### Patch Changes
+
+- [#1072](https://github.com/VoltAgent/voltagent/pull/1072) [`42be052`](https://github.com/VoltAgent/voltagent/commit/42be0522175449ffa1e61181fda6f3e80beb1653) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: auto-register standalone Agent VoltOps client for remote observability export
+  - When an `Agent` is created with `voltOpsClient` and no global client is registered, the agent now seeds `AgentRegistry` with that client.
+  - This enables remote OTLP trace/log exporters that resolve credentials via global registry in standalone `new Agent(...)` setups (without `new VoltAgent(...)`).
+  - Existing global client precedence is preserved; agent-level client does not override an already configured global client.
+  - Added coverage in `client-priority.spec.ts` for both auto-register and non-override scenarios.
+
+- [#1064](https://github.com/VoltAgent/voltagent/pull/1064) [`047ff70`](https://github.com/VoltAgent/voltagent/commit/047ff70a8c47eb22748ff71f3b50b1e03ca7d4df) Thanks [@omeraplak](https://github.com/omeraplak)! - Add multi-step loop bodies for `andDoWhile` and `andDoUntil`.
+  - Loop steps now accept either a single `step` or a sequential `steps` array.
+  - When `steps` is provided, each iteration runs the steps in order and feeds each output into the next step.
+  - Workflow step serialization now includes loop `subSteps` when a loop has multiple steps.
+  - Added runtime and type tests for chained loop steps.
+
+## 2.4.1
+
+### Patch Changes
+
+- [#1051](https://github.com/VoltAgent/voltagent/pull/1051) [`b0482cb`](https://github.com/VoltAgent/voltagent/commit/b0482cb16e3c2aff786581a1291737f772e1d19d) Thanks [@omeraplak](https://github.com/omeraplak)! - Fix workspace skill prompt injection and guidance for skill access tools.
+  - Change activated skill prompt injection to include metadata only (`name`, `id`, `description`) instead of embedding full `SKILL.md` instruction bodies.
+  - Clarify workspace skills system prompt so agents use workspace skill tools for skill access and avoid sandbox commands like `execute_command`, `ls /skills`, or `cat /skills/...`.
+
+- [#1067](https://github.com/VoltAgent/voltagent/pull/1067) [`f36545c`](https://github.com/VoltAgent/voltagent/commit/f36545c63727e1ae4e52b991e7080747e2988ccc) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: persist conversation progress incrementally during multi-step runs
+  - Added step-level conversation persistence checkpoints so completed steps are no longer only saved at turn finish.
+  - Tool completion steps (`tool-result` / `tool-error`) now trigger immediate persistence flushes in step mode.
+  - Added configurable agent persistence options:
+    - `conversationPersistence.mode` (`"step"` or `"finish"`)
+    - `conversationPersistence.debounceMs`
+    - `conversationPersistence.flushOnToolResult`
+  - Added global VoltAgent default `agentConversationPersistence` and wiring to registered agents.
+
+- [#1059](https://github.com/VoltAgent/voltagent/pull/1059) [`ec82442`](https://github.com/VoltAgent/voltagent/commit/ec824427858858fa63c8cfeb3b911f943c23ce71) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add persisted feedback-provided markers for message feedback metadata
+  - `AgentFeedbackMetadata` now supports `provided`, `providedAt`, and `feedbackId`.
+  - Added `Agent.isFeedbackProvided(...)` and `Agent.isMessageFeedbackProvided(...)` helpers.
+  - Added `agent.markFeedbackProvided(...)` to persist a feedback-submitted marker on a stored message so feedback UI can stay hidden after memory reloads.
+  - Added `result.feedback.markFeedbackProvided(...)` and `result.feedback.isProvided()` helper methods for SDK usage.
+  - Updated server response schema to include the new feedback metadata fields.
+
+  ```ts
+  const result = await agent.generateText("How was this answer?", {
+    userId: "user-1",
+    conversationId: "conv-1",
+    feedback: true,
+  });
+
+  if (result.feedback && !result.feedback.isProvided()) {
+    // call after your feedback ingestion succeeds
+    await result.feedback.markFeedbackProvided({
+      feedbackId: "fb_123", // optional
+    });
+  }
+  ```
+
+- [#1051](https://github.com/VoltAgent/voltagent/pull/1051) [`b0482cb`](https://github.com/VoltAgent/voltagent/commit/b0482cb16e3c2aff786581a1291737f772e1d19d) Thanks [@omeraplak](https://github.com/omeraplak)! - Enable workspace skills prompt injection by default when an agent has a workspace with skills configured.
+  - Agents now auto-compose a workspace skills prompt hook by default.
+  - Added `workspaceSkillsPrompt` to `AgentOptions` to customize (`WorkspaceSkillsPromptOptions`), force (`true`), or disable (`false`) prompt injection.
+  - When a custom `hooks.onPrepareMessages` is provided, it now composes with the default workspace skills prompt hook unless `workspaceSkillsPrompt` is explicitly set to `false`.
+  - Updated workspace skills docs and the `examples/with-workspace` sample to document and use the new behavior.
+
+- [#1051](https://github.com/VoltAgent/voltagent/pull/1051) [`b0482cb`](https://github.com/VoltAgent/voltagent/commit/b0482cb16e3c2aff786581a1291737f772e1d19d) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: improve workspace skill compatibility for third-party `SKILL.md` files that do not declare file allowlists in frontmatter.
+  - Infer `references`, `scripts`, and `assets` allowlists from relative Markdown links in skill instructions when explicit frontmatter arrays are missing.
+  - This enables skills like `microsoft/playwright-cli` (installed via `npx skills add ...`) to read linked reference files through workspace skill tools without manual metadata rewrites.
+
+- [#1066](https://github.com/VoltAgent/voltagent/pull/1066) [`9e5ef29`](https://github.com/VoltAgent/voltagent/commit/9e5ef29adbf8f710ce2a55910e781163c56ed8d2) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: improve `providerOptions` IntelliSense for provider-specific model settings
+  - `ProviderOptions` now includes typed option buckets for `openai`, `anthropic`, `google`, and `xai`.
+  - Existing top-level call option fields (`temperature`, `maxTokens`, `topP`, `frequencyPenalty`, `presencePenalty`, etc.) remain supported for backward compatibility.
+  - Added type-level coverage for provider-scoped options in the agent type tests.
+  - Updated docs to show provider-scoped `providerOptions` usage in agent, API endpoint, and UI integration examples.
+
+  ```ts
+  await agent.generateText("Draft a summary", {
+    temperature: 0.3,
+    providerOptions: {
+      openai: {
+        reasoningEffort: "medium",
+        textVerbosity: "low",
+      },
+      anthropic: {
+        sendReasoning: true,
+      },
+      google: {
+        thinkingConfig: {
+          thinkingBudget: 1024,
+        },
+      },
+      xai: {
+        reasoningEffort: "medium",
+      },
+    },
+  });
+  ```
+
+## 2.4.0
+
+### Minor Changes
+
+- [#1055](https://github.com/VoltAgent/voltagent/pull/1055) [`21891b4`](https://github.com/VoltAgent/voltagent/commit/21891b4574df7c771fb9b12f04402c2ffa1201bd) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add tool-aware live-eval payloads and a deterministic tool-call accuracy scorer
+
+  ### What's New
+  - `@voltagent/core`
+    - Live eval payload now includes `messages`, `toolCalls`, and `toolResults`.
+    - If `toolCalls`/`toolResults` are not explicitly provided, they are derived from the normalized message/step chain.
+    - New exported eval types: `AgentEvalToolCall` and `AgentEvalToolResult`.
+  - `@voltagent/scorers`
+    - Added prebuilt `createToolCallAccuracyScorerCode` for deterministic tool evaluation.
+    - Supports both single-tool checks (`expectedTool`) and ordered tool-chain checks (`expectedToolOrder`).
+    - Supports strict and lenient matching modes.
+
+  ### Code Examples
+
+  Built-in tool-call scorer:
+
+  ```ts
+  import { createToolCallAccuracyScorerCode } from "@voltagent/scorers";
+
+  const toolOrderScorer = createToolCallAccuracyScorerCode({
+    expectedToolOrder: ["searchProducts", "checkInventory"],
+    strictMode: false,
+  });
+  ```
+
+  Custom scorer using `toolCalls` + `toolResults`:
+
+  ```ts
+  import { buildScorer } from "@voltagent/core";
+
+  interface ToolEvalPayload extends Record<string, unknown> {
+    toolCalls?: Array<{ toolName?: string }>;
+    toolResults?: Array<{ isError?: boolean; error?: unknown }>;
+  }
+
+  const toolExecutionHealthScorer = buildScorer<ToolEvalPayload, Record<string, unknown>>({
+    id: "tool-execution-health",
+    label: "Tool Execution Health",
+  })
+    .score(({ payload }) => {
+      const toolCalls = payload.toolCalls ?? [];
+      const toolResults = payload.toolResults ?? [];
+
+      const failedResults = toolResults.filter(
+        (result) => result.isError === true || Boolean(result.error)
+      );
+      const completionRatio =
+        toolCalls.length === 0 ? 1 : Math.min(toolResults.length / toolCalls.length, 1);
+
+      return {
+        score: Math.max(0, completionRatio - failedResults.length * 0.25),
+        metadata: {
+          toolCallCount: toolCalls.length,
+          toolResultCount: toolResults.length,
+          failedResultCount: failedResults.length,
+        },
+      };
+    })
+    .build();
+  ```
+
+- [#1054](https://github.com/VoltAgent/voltagent/pull/1054) [`3556385`](https://github.com/VoltAgent/voltagent/commit/3556385f207de8c669b878ccea8257a421e15c0f) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add `onToolError` hook for customizing tool error payloads before serialization
+
+  Example:
+
+  ```ts
+  import { Agent, createHooks } from "@voltagent/core";
+
+  const agent = new Agent({
+    name: "Assistant",
+    instructions: "Use tools when needed.",
+    model: "openai/gpt-4o-mini",
+    hooks: createHooks({
+      onToolError: async ({ originalError, error }) => {
+        const maybeAxios = (originalError as any).isAxiosError === true;
+        if (!maybeAxios) {
+          return;
+        }
+
+        return {
+          output: {
+            error: true,
+            name: error.name,
+            message: originalError.message,
+            code: (originalError as any).code,
+            status: (originalError as any).response?.status,
+          },
+        };
+      },
+    }),
+  });
+  ```
+
+### Patch Changes
+
+- [#1052](https://github.com/VoltAgent/voltagent/pull/1052) [`156c98e`](https://github.com/VoltAgent/voltagent/commit/156c98e738c0e86dc9fc2dc4d55ee48c8e1e2576) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: expose workspace in tool execution context - #1046
+  - Add `workspace?: Workspace` to `OperationContext`, so custom tools can access `options.workspace` during tool calls.
+  - Wire agent operation context creation to attach the configured workspace automatically.
+  - Add regression coverage showing a tool call can read workspace filesystem content and fetch sandbox output in the same execution.
+
+- [#1058](https://github.com/VoltAgent/voltagent/pull/1058) [`480981a`](https://github.com/VoltAgent/voltagent/commit/480981afe136b575d2ba6d943924dddc5e07da44) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: make workspace toolkit schemas compatible with Zod v4 record handling - #1043
+
+  ### What Changed
+  - Updated workspace toolkit input schemas to avoid single-argument `z.record(...)` usage that can fail in Zod v4 JSON schema conversion paths.
+  - `workspace_sandbox.execute_command` now uses `z.record(z.string(), z.string())` for `env`.
+  - `workspace_index_content` now uses `z.record(z.string(), z.unknown())` for `metadata`.
+
+  ### Why
+
+  With `@voltagent/core` + `zod@4`, some workspace toolkit flows could fail at runtime with:
+
+  `Cannot read properties of undefined (reading '_zod')`
+
+  This patch ensures built-in workspace toolkits (such as sandbox and search indexing) work reliably across supported Zod versions.
+
+## 2.3.8
+
+### Patch Changes
+
+- [#1044](https://github.com/VoltAgent/voltagent/pull/1044) [`bbe0058`](https://github.com/VoltAgent/voltagent/commit/bbe0058974bc4cc05faab4ff4cdcdf18d3e681c5) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: include instructions from dynamic toolkits in system prompt generation - #1042
+
+  When `tools` is defined dynamically and returns toolkit objects with `addInstructions: true`, those toolkit instructions are now appended to the system prompt for that execution.
+
+  ### What changed
+  - Resolved dynamic tools before system prompt assembly so runtime toolkit metadata is available during prompt enrichment.
+  - Passed runtime toolkits into system message enrichment (`getSystemMessage`/`enrichInstructions`) instead of only using statically registered toolkits.
+  - Merged static + runtime toolkit instructions with toolkit-name de-duplication.
+  - Added regression coverage for async dynamic toolkit instructions.
+
+  ### Impact
+  - Dynamic toolkit guidance is now honored consistently in prompt construction.
+  - Behavior now matches static toolkit instruction handling.
+
+- [#1048](https://github.com/VoltAgent/voltagent/pull/1048) [`bdb2113`](https://github.com/VoltAgent/voltagent/commit/bdb2113c61e3370df6d921abc6f6eafc1f92a938) Thanks [@chrisisagile](https://github.com/chrisisagile)! - Fix workflow state persistence for userId/conversationId and make resume robust when input is missing by falling back to workflow-start event input.
+
+## 2.3.7
+
+### Patch Changes
+
+- [#1040](https://github.com/VoltAgent/voltagent/pull/1040) [`5e54d3b`](https://github.com/VoltAgent/voltagent/commit/5e54d3b54e2823479788617ce0a1bb5211260f9b) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add multi-tenant filters to workflow execution listing (`/workflows/executions`)
+
+  You can now filter workflow execution history by `userId` and metadata fields in addition to
+  existing filters (`workflowId`, `status`, `from`, `to`, `limit`, `offset`).
+
+  ### What's New
+  - Added `userId` filter support for workflow run queries.
+  - Added metadata filtering support:
+    - `metadata` as URL-encoded JSON object
+    - `metadata.<key>` query params (for example: `metadata.tenantId=acme`)
+  - Added status aliases for compatibility:
+    - `success` -> `completed`
+    - `pending` -> `running`
+  - Implemented consistently across storage adapters:
+    - In-memory
+    - PostgreSQL
+    - LibSQL
+    - Supabase
+    - Cloudflare D1
+    - Managed Memory (`@voltagent/voltagent-memory`)
+  - Updated server docs and route descriptions to include new filters.
+
+  ### TypeScript Example
+
+  ```ts
+  const params = new URLSearchParams({
+    workflowId: "order-approval",
+    status: "completed",
+    userId: "user-123",
+    "metadata.tenantId": "acme",
+    "metadata.region": "eu",
+    limit: "20",
+    offset: "0",
+  });
+
+  const response = await fetch(`http://localhost:3141/workflows/executions?${params.toString()}`);
+  const data = await response.json();
+  ```
+
+  ### cURL Examples
+
+  ```bash
+  # Filter by workflow + user + metadata key
+  curl "http://localhost:3141/workflows/executions?workflowId=order-approval&userId=user-123&metadata.tenantId=acme&status=completed&limit=20&offset=0"
+  ```
+
+  ```bash
+  # Filter by metadata JSON object (URL-encoded)
+  curl "http://localhost:3141/workflows/executions?metadata=%7B%22tenantId%22%3A%22acme%22%2C%22region%22%3A%22eu%22%7D"
+  ```
+
+## 2.3.6
+
+### Patch Changes
+
+- [#1034](https://github.com/VoltAgent/voltagent/pull/1034) [`b65b342`](https://github.com/VoltAgent/voltagent/commit/b65b342e17804448a6f3cf0c21966dbc02242086) Thanks [@klakpin](https://github.com/klakpin)! - fix(core): resolve race condition with concurrent tool spans
+
+  Fixed a race condition where tools running in parallel would overwrite each other's
+  parentToolSpan in the shared systemContext. The fix passes parentToolSpan through
+  execution options instead of systemContext, ensuring each tool receives its unique
+  span. Backward compatibility is maintained by checking both options and systemContext.
+
+- [#1035](https://github.com/VoltAgent/voltagent/pull/1035) [`e7b301a`](https://github.com/VoltAgent/voltagent/commit/e7b301a7fbb646f2f50c19014b5fbb4004044022) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: forward workspace runtime context to sandbox, search, and skills operations
+
+  ### What's New
+
+  Workspace runtime context is now consistently propagated across workspace toolkits and internals, which enables tenant-aware routing patterns.
+  - `WorkspaceSandboxExecuteOptions` now includes `operationContext`.
+  - `execute_command` now forwards `operationContext` to `workspace.sandbox.execute(...)`.
+  - Search operations now accept/forward filesystem call context in indexing and query flows.
+  - Skills operations now accept/forward context in discovery, indexing, loading, activation, deactivation, search, and file reads.
+  - Skills `rootPaths` resolver now receives `operationContext` for dynamic root resolution.
+
+  ### Multi-tenant workspace example (filesystem + search + skills)
+
+  ```ts
+  import { Agent, NodeFilesystemBackend, Workspace } from "@voltagent/core";
+
+  const workspace = new Workspace({
+    filesystem: {
+      backend: ({ operationContext }) => {
+        const tenantId = String(operationContext?.context.get("tenantId") ?? "default");
+        return new NodeFilesystemBackend({
+          rootDir: `./.workspace/${tenantId}`,
+        });
+      },
+    },
+    search: {
+      autoIndexPaths: [{ path: "/", glob: "**/*.md" }],
+    },
+    skills: {
+      rootPaths: async ({ operationContext }) => {
+        const tenantId = String(operationContext?.context.get("tenantId") ?? "default");
+        return ["/skills/common", `/skills/tenants/${tenantId}`];
+      },
+    },
+  });
+
+  const agent = new Agent({
+    name: "tenant-aware-agent",
+    model,
+    workspace,
+  });
+
+  await agent.generateText("Search tenant docs and use relevant skills", {
+    context: new Map([["tenantId", "acme"]]),
+  });
+  ```
+
+  ### Tenant-aware remote sandbox routing example (E2B/Daytona)
+
+  ```ts
+  import type {
+    WorkspaceSandbox,
+    WorkspaceSandboxExecuteOptions,
+    WorkspaceSandboxResult,
+  } from "@voltagent/core";
+
+  class TenantSandboxRouter implements WorkspaceSandbox {
+    name = "tenant-router";
+    private readonly sandboxes = new Map<string, WorkspaceSandbox>();
+
+    constructor(private readonly factory: (tenantId: string) => WorkspaceSandbox) {}
+
+    async execute(options: WorkspaceSandboxExecuteOptions): Promise<WorkspaceSandboxResult> {
+      const tenantId = String(options.operationContext?.context.get("tenantId") ?? "default");
+
+      let sandbox = this.sandboxes.get(tenantId);
+      if (!sandbox) {
+        sandbox = this.factory(tenantId);
+        this.sandboxes.set(tenantId, sandbox);
+      }
+
+      return sandbox.execute(options);
+    }
+  }
+  ```
+
+  If you call `workspace.sandbox.execute(...)` directly (outside toolkit execution), pass `operationContext` explicitly when you need tenant/account routing.
+
+## 2.3.5
+
+### Patch Changes
+
+- [#1025](https://github.com/VoltAgent/voltagent/pull/1025) [`c783943`](https://github.com/VoltAgent/voltagent/commit/c783943fa165734fcadabbd0c6ce12212b3a5969) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: introduce experimental Workspace support with filesystem, sandbox execution, search indexing, and skill discovery; add global workspace defaults and optional sandbox providers (E2B/Daytona). - #1008
+
+  Example:
+
+  ```ts
+  import { Agent, Workspace, LocalSandbox, NodeFilesystemBackend } from "@voltagent/core";
+
+  const workspace = new Workspace({
+    id: "support-workspace",
+    operationTimeoutMs: 30_000,
+    filesystem: {
+      backend: new NodeFilesystemBackend({
+        rootDir: "./.workspace",
+      }),
+    },
+    sandbox: new LocalSandbox({
+      rootDir: "./.sandbox",
+      isolation: { provider: "detect" },
+      cleanupOnDestroy: true,
+    }),
+    search: {
+      autoIndexPaths: ["/notes", "/tickets"],
+    },
+    skills: {
+      rootPaths: ["/skills"],
+    },
+  });
+
+  const agent = new Agent({
+    name: "support-agent",
+    model,
+    instructions: "Use workspace tools to review tickets and summarize findings.",
+    workspace,
+    workspaceToolkits: {
+      filesystem: {
+        toolPolicies: {
+          tools: { write_file: { needsApproval: true } },
+        },
+      },
+    },
+  });
+
+  const { text } = await agent.generateText(
+    [
+      "Scan /tickets and /notes.",
+      "Use workspace_search to find urgent issues from the last week.",
+      "Summarize the top 3 risks and include file paths as citations.",
+    ].join("\n"),
+    { maxSteps: 40 }
+  );
+  ```
+
+## 2.3.4
+
+### Patch Changes
+
+- [#1020](https://github.com/VoltAgent/voltagent/pull/1020) [`d751955`](https://github.com/VoltAgent/voltagent/commit/d751955a69b2aedb6082a377fc0aa0799e4bf05c) Thanks [@chrisisagile](https://github.com/chrisisagile)! - Drop orphan reasoning parts when tool-only messages are sanitized.
+  Fixes #1019.
+
+- [#1022](https://github.com/VoltAgent/voltagent/pull/1022) [`48d94af`](https://github.com/VoltAgent/voltagent/commit/48d94af243f8fbd37cb92fa3803eb877208ac34c) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: keep streaming message ids consistent with memory by emitting `messageId` on start/start-step chunks and using it for UI stream mapping (leaving text-part ids intact).
+
+## 2.3.3
+
+### Patch Changes
+
+- [#1014](https://github.com/VoltAgent/voltagent/pull/1014) [`e121adc`](https://github.com/VoltAgent/voltagent/commit/e121adcb8604c3b2dd82b720103874f7c0b3485d) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: persist feedback metadata on assistant messages so history reloads keep feedback actions
+
+- [#1017](https://github.com/VoltAgent/voltagent/pull/1017) [`c706872`](https://github.com/VoltAgent/voltagent/commit/c70687293b55b910e9f94c36a2602811e524f2ce) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: align OpenAI reasoning metadata handling with AI SDK
+  - preserve non-reasoning OpenAI itemIds (e.g. msg*/fc*) when reasoning parts are absent
+  - only strip reasoning-linked OpenAI metadata (rs\_/reasoning_trace_id/reasoning) when no reasoning context exists
+  - include OpenAI reasoning itemId in ConversationBuffer signatures to avoid dropping distinct reasoning parts during merge
+
+- [#1016](https://github.com/VoltAgent/voltagent/pull/1016) [`238f87f`](https://github.com/VoltAgent/voltagent/commit/238f87ff66ce16c8b37a1d599958563516819102) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: validate UI/response messages and keep streaming response message IDs consistent across UI streams - #1010
+  fix(postgres/supabase): upsert conversation messages by (conversation_id, message_id) to avoid duplicate insert failures
+
+## 2.3.2
+
+### Patch Changes
+
+- [#1011](https://github.com/VoltAgent/voltagent/pull/1011) [`38a80bc`](https://github.com/VoltAgent/voltagent/commit/38a80bcaee42d1d397f9bcfb2f1cf6c50d938cd6) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: preserve OpenAI reasoning/tool metadata during summarization so function_call items keep their required reasoning references and no longer error
+
+## 2.3.1
+
+### Patch Changes
+
+- [#998](https://github.com/VoltAgent/voltagent/pull/998) [`e209e3a`](https://github.com/VoltAgent/voltagent/commit/e209e3aa35a5ecb233f8743569cb65e18f003357) Thanks [@zrosenbauer](https://github.com/zrosenbauer)! - Add separate workflow examples demonstrating both APIs:
+  - `with-workflow`: Uses `createWorkflow` functional API with step functions as arguments
+  - `with-workflow-chain`: Uses `createWorkflowChain` fluent chaining API
+
+  Both examples now demonstrate `workflowState` and `setWorkflowState` for persisting data across steps.
+
+## 2.3.0
+
+### Minor Changes
+
+- [#991](https://github.com/VoltAgent/voltagent/pull/991) [`e0b6693`](https://github.com/VoltAgent/voltagent/commit/e0b6693dcdd18821735607cbd10ac1fa250c552e) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: replace tool routers with `searchTools` + `callTool` tool routing
+
+  Tool routing now exposes two system tools instead of router tools. The model must search first, then call the selected tool with schema-compliant args. `createToolRouter` and `toolRouting.routers` are removed.
+
+  Migration guide
+  1. Remove router tools and `toolRouting.routers`
+
+  Before:
+
+  ```ts
+  import { Agent, createToolRouter } from "@voltagent/core";
+
+  const router = createToolRouter({
+    name: "tool_router",
+    description: "Route requests to tools",
+    embedding: "openai/text-embedding-3-small",
+  });
+
+  const agent = new Agent({
+    name: "Tool Routing Agent",
+    instructions: "Use tool_router when you need a tool.",
+    tools: [router],
+    toolRouting: {
+      routers: [router],
+      pool: [
+        /* tools */
+      ],
+      topK: 2,
+    },
+  });
+  ```
+
+  After:
+
+  ```ts
+  import { Agent } from "@voltagent/core";
+
+  const agent = new Agent({
+    name: "Tool Routing Agent",
+    instructions:
+      "When you need a tool, call searchTools with the user request, then call callTool with the exact tool name and schema-compliant arguments.",
+    toolRouting: {
+      embedding: "openai/text-embedding-3-small",
+      pool: [
+        /* tools */
+      ],
+      topK: 2,
+    },
+  });
+  ```
+
+  2. Optional: disable search enforcement if needed
+
+  ```ts
+  const agent = new Agent({
+    name: "Relaxed Agent",
+    instructions: "Use searchTools before callTool when possible.",
+    toolRouting: {
+      pool: [
+        /* tools */
+      ],
+      enforceSearchBeforeCall: false,
+    },
+  });
+  ```
+
+## 2.2.2
+
+### Patch Changes
+
+- [#990](https://github.com/VoltAgent/voltagent/pull/990) [`fd17a51`](https://github.com/VoltAgent/voltagent/commit/fd17a51dae914436a6185c13a43865813a5431bb) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: ship embedded docs inside @voltagent/core (packages/core/docs) and keep them synced during build/pack for offline, version-matched docs lookup
+
+## 2.2.1
+
+### Patch Changes
+
+- [#987](https://github.com/VoltAgent/voltagent/pull/987) [`12a3d6e`](https://github.com/VoltAgent/voltagent/commit/12a3d6eb5db86979f9d81f29e6787da7e3750f47) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: auto-inherit VoltAgent spans for wrapped agent calls
+
+  Agent calls now attach to the active VoltAgent workflow/agent span by default when `parentSpan` is not provided. This keeps wrapper logic (like `andThen` + `generateText`) inside the same trace without needing `andAgent`. Ambient framework spans are still ignored; only VoltAgent workflow/agent spans are eligible.
+
+  Example:
+
+  ```ts
+  const contentAgent = new Agent({
+    name: "ContentAgent",
+    model: "openai/gpt-4o-mini",
+    instructions: "Write concise summaries.",
+  });
+
+  const wrappedAgentWorkflow = createWorkflowChain({
+    id: "wrapped-agent-call",
+    name: "Wrapped Agent Call Workflow",
+    input: z.object({ topic: z.string() }),
+    result: z.object({ summary: z.string() }),
+  }).andThen({
+    id: "maybe-call-agent",
+    execute: async ({ data }) => {
+      const { text } = await contentAgent.generateText(
+        `Write a single-sentence summary about: ${data.topic}`
+      );
+      return { summary: text.trim() };
+    },
+  });
+  ```
+
+  Opt out when you want a fresh trace:
+
+  ```ts
+  await contentAgent.generateText("...", { inheritParentSpan: false });
+  ```
+
+## 2.2.0
+
+### Minor Changes
+
+- [#978](https://github.com/VoltAgent/voltagent/pull/978) [`db394ce`](https://github.com/VoltAgent/voltagent/commit/db394ce5fb07496b17715d0b8e044c3323fcb438) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: allow tool-specific hooks and let `onToolEnd` override tool output #975
+
+  Tool hooks run alongside agent hooks. `onToolEnd` can now return `{ output }` to replace the tool result (validated again if an output schema exists).
+
+  ```ts
+  import { Agent, createTool } from "@voltagent/core";
+  import { z } from "zod";
+
+  const normalizeTool = createTool({
+    name: "normalize_text",
+    description: "Normalizes and truncates text",
+    parameters: z.object({ text: z.string() }),
+    execute: async ({ text }) => text,
+    hooks: {
+      onStart: ({ tool }) => {
+        console.log(`[tool] ${tool.name} starting`);
+      },
+      onEnd: ({ output }) => {
+        if (typeof output === "string") {
+          return { output: output.slice(0, 1000) };
+        }
+      },
+    },
+  });
+
+  const agent = new Agent({
+    name: "ToolHooksAgent",
+    instructions: "Use tools as needed.",
+    model: myModel,
+    tools: [normalizeTool],
+    hooks: {
+      onToolEnd: ({ output }) => {
+        if (typeof output === "string") {
+          return { output: output.trim() };
+        }
+      },
+    },
+  });
+  ```
+
+### Patch Changes
+
+- [#985](https://github.com/VoltAgent/voltagent/pull/985) [`85f8611`](https://github.com/VoltAgent/voltagent/commit/85f8611ca8cd3ea48f45b24da43fc9962c89fef9) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: workflowState + andForEach selector/map
+
+  ### What's New
+  - `workflowState` and `setWorkflowState` add shared state across steps (preserved after suspend/resume).
+  - `andForEach` now supports an `items` selector and optional `map` (iterate without losing parent data).
+
+  ### Workflow State Usage
+
+  ```ts
+  const result = await workflow.run(
+    { userId: "user-123" },
+    {
+      workflowState: {
+        plan: "pro",
+      },
+    }
+  );
+
+  createWorkflowChain({
+    id: "state-demo",
+    input: z.object({ userId: z.string() }),
+  })
+    .andThen({
+      id: "cache-user",
+      execute: async ({ data, setWorkflowState }) => {
+        setWorkflowState((prev) => ({
+          ...prev,
+          userId: data.userId,
+        }));
+        return data;
+      },
+    })
+    .andThen({
+      id: "use-cache",
+      execute: async ({ workflowState }) => {
+        return { cachedUserId: workflowState.userId };
+      },
+    });
+  ```
+
+  ### andForEach Selector + Map
+
+  ```ts
+  createWorkflowChain({
+    id: "batch-process",
+    input: z.object({
+      label: z.string(),
+      values: z.array(z.number()),
+    }),
+  }).andForEach({
+    id: "label-items",
+    items: ({ data }) => data.values,
+    map: ({ data }, item) => ({ label: data.label, value: item }),
+    step: andThen({
+      id: "format",
+      execute: async ({ data }) => `${data.label}:${data.value}`,
+    }),
+  });
+  ```
+
+- [#983](https://github.com/VoltAgent/voltagent/pull/983) [`96ebba3`](https://github.com/VoltAgent/voltagent/commit/96ebba353116e49b5a4eabeb53fa302e6a05da51) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: allow custom workflow stream event types while preserving IntelliSense for built-in names
+
+- [#986](https://github.com/VoltAgent/voltagent/pull/986) [`850b5bb`](https://github.com/VoltAgent/voltagent/commit/850b5bb77f666c05bb26043ea45600c3fd212e2f) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add optional conversation title generation on conversation creation. Titles are derived from the first user message, respect a max length, and can use the agent model or a configured override. #981
+
+  ```ts
+  import { Memory } from "@voltagent/core";
+  import { LibSQLMemoryAdapter } from "@voltagent/libsql";
+
+  const memory = new Memory({
+    storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/memory.db" }),
+    generateTitle: {
+      enabled: true,
+      model: "gpt-4o-mini", // defaults to the agent model when omitted
+      systemPrompt: "Generate a short title (max 6 words).",
+      maxLength: 60,
+      maxOutputTokens: 24,
+    },
+  });
+  ```
+
+- [#980](https://github.com/VoltAgent/voltagent/pull/980) [`b65715e`](https://github.com/VoltAgent/voltagent/commit/b65715e5833f80c5a7a598c6815506fd06008b71) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add tool routing for agents with router tools, pool/expose controls, and embedding routing.
+
+  Embedding model strings also accept provider-qualified IDs like `openai/text-embedding-3-small` using the same model registry as agent model strings.
+
+  Basic embedding router:
+
+  ```ts
+  import { openai } from "@ai-sdk/openai";
+  import { Agent, createTool } from "@voltagent/core";
+  import { z } from "zod";
+
+  const getWeather = createTool({
+    name: "get_weather",
+    description: "Get the current weather for a city",
+    parameters: z.object({ location: z.string() }),
+    execute: async ({ location }) => ({ location, temperatureC: 22 }),
+  });
+
+  const agent = new Agent({
+    name: "Tool Routing Agent",
+    instructions: "Use tool_router for tools. Pass the user request as the query.",
+    model: "openai/gpt-4o-mini",
+    tools: [getWeather],
+    toolRouting: {
+      embedding: openai.embedding("text-embedding-3-small"),
+      topK: 2,
+    },
+  });
+  ```
+
+  Pool and expose:
+
+  ```ts
+  const agent = new Agent({
+    name: "Support Agent",
+    instructions: "Use tool_router for tools.",
+    model: "openai/gpt-4o-mini",
+    toolRouting: {
+      embedding: "text-embedding-3-small",
+      pool: [getWeather],
+      expose: [getStatus],
+    },
+  });
+  ```
+
+  Custom router strategy + resolver mode:
+
+  ```ts
+  import { createToolRouter, type ToolArgumentResolver } from "@voltagent/core";
+
+  const resolver: ToolArgumentResolver = async ({ query, tool }) => {
+    if (tool.name === "get_weather") return { location: query };
+    return {};
+  };
+
+  const router = createToolRouter({
+    name: "tool_router",
+    description: "Route requests with a resolver",
+    embedding: "text-embedding-3-small",
+    mode: "resolver",
+    resolver,
+  });
+  ```
+
+## 2.1.6
+
+### Patch Changes
+
+- [#973](https://github.com/VoltAgent/voltagent/pull/973) [`9221498`](https://github.com/VoltAgent/voltagent/commit/9221498c71eb77759380d17e50521abfd213a64c) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: normalize Anthropic usage for finish events so totals reflect the last step in multi-step runs
+
+## 2.1.5
+
+### Patch Changes
+
+- [#967](https://github.com/VoltAgent/voltagent/pull/967) [`94299c0`](https://github.com/VoltAgent/voltagent/commit/94299c0c4d3c2d4024ef47ba448f12ef6dc3e489) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add VoltAgent-level default memory for agents and workflows
+
+  You can now define defaults once at the VoltAgent entrypoint. Agent/workflow instances still win when they set `memory`, and `agentMemory`/`workflowMemory` fall back to the shared `memory` option.
+
+  ### Usage
+
+  ```ts
+  import { Agent, Memory, VoltAgent } from "@voltagent/core";
+  import { LibSQLMemoryAdapter } from "@voltagent/libsql";
+
+  const sharedMemory = new Memory({
+    storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/shared.db" }),
+  });
+
+  const agentMemory = new Memory({
+    storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/agents.db" }),
+  });
+
+  const workflowMemory = new Memory({
+    storage: new LibSQLMemoryAdapter({ url: "file:./.voltagent/workflows.db" }),
+  });
+
+  const assistant = new Agent({
+    name: "assistant",
+    instructions: "Be helpful.",
+    model: "openai/gpt-4o-mini",
+  });
+
+  new VoltAgent({
+    agents: { assistant },
+    memory: sharedMemory,
+    agentMemory,
+    workflowMemory,
+  });
+  ```
+
+## 2.1.4
+
+### Patch Changes
+
+- [#965](https://github.com/VoltAgent/voltagent/pull/965) [`0feb8b0`](https://github.com/VoltAgent/voltagent/commit/0feb8b049c6edd7474e496c0e0a829b1bf568f28) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: allow `andAgent` schema to accept `Output.*` specs (arrays, choices, json, text)
+
+  `andAgent` now supports the same output flexibility as `agent.generateText`, so you can return non-object
+  structures from workflow steps.
+
+  Usage:
+
+  ```ts
+  import { Output } from "ai";
+  import { z } from "zod";
+  import { Agent, createWorkflowChain } from "@voltagent/core";
+
+  const agent = new Agent({
+    name: "Tagger",
+    model: "openai/gpt-4o-mini",
+    instructions: "Return tags only.",
+  });
+
+  const workflow = createWorkflowChain({
+    id: "tag-workflow",
+    input: z.object({ topic: z.string() }),
+  }).andAgent(async ({ data }) => `List tags for ${data.topic}`, agent, {
+    schema: Output.array({ element: z.string() }),
+  });
+
+  const result = await workflow.run({ topic: "workflows" });
+  // result: string[]
+  ```
+
+## 2.1.3
+
+### Patch Changes
+
+- [#959](https://github.com/VoltAgent/voltagent/pull/959) [`99ba28c`](https://github.com/VoltAgent/voltagent/commit/99ba28c1a531ff6cabb08a5b3daea3db3dd69629) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: allow PlanAgent task tool to forward subagent stream events via supervisorConfig
+
+  Example:
+
+  ```ts
+  const agent = new PlanAgent({
+    name: "Supervisor",
+    systemPrompt: "Delegate when helpful.",
+    model: "openai/gpt-4o",
+    task: {
+      supervisorConfig: {
+        fullStreamEventForwarding: {
+          types: ["tool-call", "tool-result", "text-delta"],
+        },
+      },
+    },
+  });
+  ```
+
+- [#963](https://github.com/VoltAgent/voltagent/pull/963) [`ee1ad19`](https://github.com/VoltAgent/voltagent/commit/ee1ad197622a221d6216dafeefc9dae002a88ccf) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add retry/fallback hooks and middleware retry feedback
+
+  ### Model Retry and Fallback
+
+  Configure ordered model candidates with per-model retry limits.
+
+  ```ts
+  import { Agent } from "@voltagent/core";
+  import { anthropic } from "@ai-sdk/anthropic";
+
+  const agent = new Agent({
+    name: "Support",
+    instructions: "Answer support questions with short, direct replies.",
+    model: [
+      { id: "primary", model: "openai/gpt-4o-mini", maxRetries: 2 },
+      { id: "fallback", model: anthropic("claude-3-5-sonnet"), maxRetries: 1 },
+    ],
+  });
+  ```
+
+  - `maxRetries` is per model (total attempts = `maxRetries + 1`).
+  - If retries are exhausted, VoltAgent tries the next enabled model.
+
+  ### Middleware Retry Feedback
+
+  Middleware can request a retry. The retry reason and metadata are added as a system
+  message for the next attempt.
+
+  ```ts
+  import { Agent, createOutputMiddleware } from "@voltagent/core";
+
+  const requireSignature = createOutputMiddleware<string>({
+    name: "RequireSignature",
+    handler: ({ output, abort }) => {
+      if (!output.includes("-- Support")) {
+        abort("Missing signature", { retry: true, metadata: { signature: "-- Support" } });
+      }
+      return output;
+    },
+  });
+
+  const agent = new Agent({
+    name: "Support",
+    instructions: "Answer support questions with short, direct replies.",
+    model: "openai/gpt-4o-mini",
+    maxMiddlewareRetries: 1,
+    outputMiddlewares: [requireSignature],
+  });
+  ```
+
+  ### Input Middleware Example
+
+  Input middleware can rewrite user input before guardrails and hooks.
+
+  ```ts
+  import { Agent, createInputMiddleware } from "@voltagent/core";
+
+  const normalizeInput = createInputMiddleware({
+    name: "NormalizeInput",
+    handler: ({ input }) => {
+      if (typeof input !== "string") return input;
+      return input.trim();
+    },
+  });
+
+  const agent = new Agent({
+    name: "Support",
+    instructions: "Answer support questions with short, direct replies.",
+    model: "openai/gpt-4o-mini",
+    inputMiddlewares: [normalizeInput],
+  });
+  ```
+
+  ### Retry and Fallback Hooks
+
+  Track retries and fallbacks in hooks. `onRetry` runs for LLM and middleware retries.
+
+  ```ts
+  const agent = new Agent({
+    name: "RetryHooks",
+    instructions: "Answer support questions with short, direct replies.",
+    model: "openai/gpt-4o-mini",
+    hooks: {
+      onRetry: async (args) => {
+        if (args.source === "llm") {
+          console.log(`LLM retry ${args.nextAttempt}/${args.maxRetries + 1} for ${args.modelName}`);
+          return;
+        }
+        console.log(
+          `Middleware retry ${args.retryCount + 1}/${args.maxRetries + 1} for ${args.middlewareId ?? "unknown"}`
+        );
+      },
+      onFallback: async ({ stage, fromModel, nextModel }) => {
+        console.log(`Fallback (${stage}) from ${fromModel} to ${nextModel ?? "next"}`);
+      },
+    },
+  });
+  ```
+
+- Updated dependencies [[`c39fedd`](https://github.com/VoltAgent/voltagent/commit/c39fedd794486d630f509b5c91aa30f8fe5dc596)]:
+  - @voltagent/internal@1.0.3
+
+## 2.1.2
+
+### Patch Changes
+
+- [#957](https://github.com/VoltAgent/voltagent/pull/957) [`7fc3122`](https://github.com/VoltAgent/voltagent/commit/7fc31223d585ba023832731407440337b61a3d71) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: prevent workflow failures from observability flush concurrency limits by serializing flushes and defaulting to serverless-only flush in auto mode
+
+## 2.1.1
+
+### Patch Changes
+
+- [#955](https://github.com/VoltAgent/voltagent/pull/955) [`1b00284`](https://github.com/VoltAgent/voltagent/commit/1b00284db76ae98204c9a989f6bea493c423fe2c) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add a model registry + router so you can use `provider/model` strings without importing provider packages
+
+  Usage:
+
+  ```ts
+  import { Agent } from "@voltagent/core";
+
+  const openaiAgent = new Agent({
+    name: "openai-agent",
+    instructions: "Summarize the report in 3 bullets.",
+    model: "openai/gpt-4o-mini",
+  });
+
+  const anthropicAgent = new Agent({
+    name: "anthropic-agent",
+    instructions: "Turn notes into action items.",
+    model: "anthropic/claude-3-5-sonnet",
+  });
+
+  const geminiAgent = new Agent({
+    name: "gemini-agent",
+    instructions: "Translate to Turkish.",
+    model: "google/gemini-2.0-flash",
+  });
+  ```
+
+- [#954](https://github.com/VoltAgent/voltagent/pull/954) [`c57f80c`](https://github.com/VoltAgent/voltagent/commit/c57f80c7026ac74c6971c95f33ccb6cf1cafd903) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: PlanAgent supports dynamic systemPrompt functions with prompt merging
+
+  ### What's New
+  - `systemPrompt` can now be a function that resolves per request (string or VoltOps prompt payload).
+  - Base PlanAgent instructions and extension prompts are appended consistently for dynamic prompts.
+
+  ### Usage
+
+  ```ts
+  import { PlanAgent } from "@voltagent/core";
+  import { openai } from "@ai-sdk/openai";
+
+  const agent = new PlanAgent({
+    name: "DynamicPlanner",
+    model: openai("gpt-4o"),
+    systemPrompt: async ({ context }) => {
+      const tenant = context.get("tenant") ?? "default";
+      return `Tenant: ${tenant}. Keep answers concise.`;
+    },
+  });
+
+  const context = new Map<string | symbol, unknown>();
+  context.set("tenant", "acme");
+
+  const result = await agent.generateText("Summarize the roadmap", { context });
+  console.log(result.text);
+  ```
+
+  Chat-style prompt support:
+
+  ```ts
+  const agent = new PlanAgent({
+    name: "DynamicChatPlanner",
+    model: openai("gpt-4o"),
+    systemPrompt: async () => ({
+      type: "chat",
+      messages: [{ role: "system", content: "You are a precise planner." }],
+    }),
+  });
+  ```
+
+## 2.1.0
+
+### Minor Changes
+
+- [#952](https://github.com/VoltAgent/voltagent/pull/952) [`79d636b`](https://github.com/VoltAgent/voltagent/commit/79d636bc93e9f6733d95c65e2258f14d33932d30) Thanks [@${payload.input}](https://github.com/${payload.input})! - feat: add eval feedback helper for onResult callbacks and VoltOps feedback client support
+
+  Example usage:
+
+  ```ts
+  import { Agent, buildScorer } from "@voltagent/core";
+  import { openai } from "@ai-sdk/openai";
+
+  const taskTypeScorer = buildScorer({
+    id: "task-type",
+    label: "Task Type",
+  })
+    .score(async ({ payload }) => {
+      const text = String(payload.input ?? payload.output ?? "");
+      const label = text.toLowerCase().includes("billing") ? "billing" : "general";
+      return {
+        score: label === "billing" ? 1 : 0.5,
+        metadata: { label },
+      };
+    })
+    .build();
+
+  const agent = new Agent({
+    name: "support",
+    model: openai("gpt-4o-mini"),
+    eval: {
+      scorers: {
+        taskType: {
+          scorer: taskTypeScorer,
+          onResult: async ({ result, feedback }) => {
+            await feedback.save({
+              key: "task_type",
+              value: result.metadata?.label ?? null,
+              score: result.score ?? null,
+              feedbackSourceType: "model",
+              feedbackSource: { type: "model", metadata: { scorerId: result.scorerId } },
+            });
+          },
+        },
+      },
+    },
+  });
+  ```
+
+  LLM judge example:
+
+  ```ts
+  import { Agent, buildScorer } from "@voltagent/core";
+  import { openai } from "@ai-sdk/openai";
+  import { z } from "zod";
+
+  const judgeModel = openai("gpt-4o-mini");
+  const judgeSchema = z.object({
+    score: z.number().min(0).max(1),
+    label: z.string(),
+    reason: z.string().optional(),
+  });
+
+  const satisfactionJudge = buildScorer({
+    id: "satisfaction-judge",
+    label: "Satisfaction Judge",
+  })
+    .score(async ({ payload }) => {
+      const prompt = `Score user satisfaction (0-1) and label it.
+  
+  Assistant: ${payload.output}`;
+      const judge = new Agent({
+        name: "satisfaction-judge",
+        model: judgeModel,
+        instructions: "Return JSON with score and label.",
+      });
+      const response = await judge.generateObject(prompt, judgeSchema);
+      return {
+        score: response.object.score,
+        metadata: {
+          label: response.object.label,
+          reason: response.object.reason ?? null,
+        },
+      };
+    })
+    .build();
+
+  const agent = new Agent({
+    name: "support",
+    model: openai("gpt-4o-mini"),
+    eval: {
+      scorers: {
+        satisfaction: {
+          scorer: satisfactionJudge,
+          onResult: async ({ result, feedback }) => {
+            await feedback.save({
+              key: "satisfaction",
+              value: result.metadata?.label ?? null,
+              score: result.score ?? null,
+              comment: result.metadata?.reason ?? null,
+              feedbackSourceType: "model",
+            });
+          },
+        },
+      },
+    },
+  });
+  ```
+
+## 2.0.14
+
+### Patch Changes
+
+- [#949](https://github.com/VoltAgent/voltagent/pull/949) [`113116b`](https://github.com/VoltAgent/voltagent/commit/113116b60d81a7174417db5842b893c9b0613ba1) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: support streaming tool outputs by returning an AsyncIterable from `execute`, emitting preliminary results before the final output.
+
+  ```ts
+  import { createTool } from "@voltagent/core";
+  import { z } from "zod";
+
+  const weatherTool = createTool({
+    name: "get_weather",
+    description: "Get the current weather for a location",
+    parameters: z.object({
+      location: z.string(),
+    }),
+    async *execute({ location }) {
+      yield { status: "loading" as const, text: `Getting weather for ${location}` };
+
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+
+      const temperature = 72;
+      yield {
+        status: "success" as const,
+        text: `The weather in ${location} is ${temperature}F`,
+        temperature,
+      };
+    },
+  });
+  ```
+
+## 2.0.13
+
+### Patch Changes
+
+- [#946](https://github.com/VoltAgent/voltagent/pull/946) [`f5187b1`](https://github.com/VoltAgent/voltagent/commit/f5187b1c31224dea01261d12ca17d6a31d7e56f2) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: export workflow step and hook types from the core entrypoint - #939
+
+## 2.0.12
+
+### Patch Changes
+
+- [#942](https://github.com/VoltAgent/voltagent/pull/942) [`c992dac`](https://github.com/VoltAgent/voltagent/commit/c992dac5cba383f426c4c8a236ff02e5717d0a97) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: surface resolved model ids for dynamic models in execution logs and spans.
+
+- [#943](https://github.com/VoltAgent/voltagent/pull/943) [`6217716`](https://github.com/VoltAgent/voltagent/commit/6217716c7c30ea36eff10d81d730da1427df6e84) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: allow merging `andAgent` output with existing workflow data via an optional mapper
+
+  ```ts
+  .andAgent(
+    ({ data }) => `What type of email is this: ${data.email}`,
+    agent,
+    {
+      schema: z.object({
+        type: z.enum(["support", "sales", "spam"]),
+        priority: z.enum(["low", "medium", "high"]),
+      }),
+    },
+    (output, { data }) => ({ ...data, emailType: output })
+  )
+  ```
+
+- [#945](https://github.com/VoltAgent/voltagent/pull/945) [`ac9ef8d`](https://github.com/VoltAgent/voltagent/commit/ac9ef8d53f59e167c0cac5b333716942ea3b5bbf) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: expose step-level retries typing in workflow chains
+
+  Type definitions now include `retries` and `retryCount` for `andThen` and `andTap`, matching the runtime behavior.
+
+  ```ts
+  import { createWorkflowChain } from "@voltagent/core";
+
+  createWorkflowChain({ id: "retry-demo" })
+    .andThen({
+      id: "fetch-user",
+      retries: 2,
+      execute: async ({ data, retryCount }) => {
+        if (retryCount && retryCount < 2) {
+          throw new Error("transient");
+        }
+        return { ...data, ok: true };
+      },
+    })
+    .andTap({
+      id: "audit",
+      execute: async ({ data, retryCount }) => {
+        console.log("tap", retryCount, data);
+      },
+    });
+  ```
+
+## 2.0.11
+
+### Patch Changes
+
+- [`44c4386`](https://github.com/VoltAgent/voltagent/commit/44c438681bdd5ffe1e88f7ad456d5f0e35bd40f8) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add feedback tokens + metadata support in the core agent runtime.
+
+  VoltAgent can create feedback tokens via VoltOps and attach feedback metadata to assistant messages (including streaming), so UIs can render ratings later.
+
+  ```ts
+  const result = await agent.generateText("Rate this answer", {
+    feedback: true,
+  });
+
+  console.log(result.feedback);
+  ```
+
+  ```ts
+  const stream = await agent.streamText("Explain this trace", {
+    feedback: true,
+  });
+
+  for await (const _chunk of stream.textStream) {
+    // consume stream output
+  }
+
+  console.log(stream.feedback);
+  ```
+
+  useChat (AI SDK compatible):
+
+  ```ts
+  import { useChat } from "@ai-sdk/react";
+  import { DefaultChatTransport } from "ai";
+
+  const transport = new DefaultChatTransport({
+    api: `${apiUrl}/agents/${agentId}/chat`,
+    prepareSendMessagesRequest({ messages }) {
+      const lastMessage = messages[messages.length - 1];
+      return {
+        body: {
+          input: [lastMessage],
+          options: {
+            feedback: {
+              key: "satisfaction",
+              feedbackConfig: {
+                type: "categorical",
+                categories: [
+                  { value: 1, label: "Satisfied" },
+                  { value: 0, label: "Unsatisfied" },
+                ],
+              },
+            },
+          },
+        },
+      };
+    },
+  });
+
+  const { messages } = useChat({ transport });
+
+  async function submitFeedback(message: any, score: number) {
+    const feedback = message?.metadata?.feedback;
+    if (!feedback?.url) return;
+
+    await fetch(feedback.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        score,
+        comment: "Helpful response",
+        feedback_source_type: "app",
+      }),
+    });
+  }
+  ```
+
+  REST API (token + ingest):
+
+  ```bash
+  curl -X POST "https://api.voltagent.dev/api/public/feedback/tokens" \
+    -H "X-Public-Key: $VOLTAGENT_PUBLIC_KEY" \
+    -H "X-Secret-Key: $VOLTAGENT_SECRET_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "trace_id": "trace-id",
+      "feedback_key": "satisfaction",
+      "expires_in": { "hours": 6 },
+      "feedback_config": {
+        "type": "categorical",
+        "categories": [
+          { "value": 1, "label": "Satisfied" },
+          { "value": 0, "label": "Unsatisfied" }
+        ]
+      }
+    }'
+  ```
+
+  ```bash
+  curl -X POST "https://api.voltagent.dev/api/public/feedback/ingest/token-id" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "score": 1,
+      "comment": "Resolved my issue",
+      "feedback_source_type": "app"
+    }'
+  ```
+
+## 2.0.10
+
+### Patch Changes
+
+- [#934](https://github.com/VoltAgent/voltagent/pull/934) [`12519f5`](https://github.com/VoltAgent/voltagent/commit/12519f572b3facbd32d35f939be08a0ad1b40b45) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: offline-first local prompts with version + label selection
+
+  ### What's New
+  - Local prompt resolution now supports multiple versions and labels stored as
+    `.voltagent/prompts/<promptName>/<version>.md`.
+  - Local files are used first; VoltOps is only queried if the local prompt is missing.
+  - If a local prompt is behind the online version, the agent logs a warning and records metadata.
+  - CLI `pull` can target labels or versions; `push` compares local vs online and creates new versions.
+
+  ### CLI Usage
+
+  ```bash
+  # Pull latest prompts (default)
+  volt prompts pull
+
+  # Pull a specific label or version (stored under .voltagent/prompts/<name>/<version>.md)
+  volt prompts pull --names support-agent --label production
+  volt prompts pull --names support-agent --prompt-version 4
+
+  # Push local changes (creates new versions after diff/confirm)
+  volt prompts push
+  ```
+
+  ### Agent Usage
+
+  ```typescript
+  instructions: async ({ prompts }) => {
+    return await prompts.getPrompt({
+      promptName: "support-agent",
+      version: 4,
+    });
+  };
+  ```
+
+  ```typescript
+  instructions: async ({ prompts }) => {
+    return await prompts.getPrompt({
+      promptName: "support-agent",
+      label: "production",
+    });
+  };
+  ```
+
+  ### Offline-First Workflow
+  - Pull once, then run fully offline with local Markdown files.
+  - Point the runtime to your local directory:
+
+  ```bash
+  export VOLTAGENT_PROMPTS_PATH="./.voltagent/prompts"
+  ```
+
+- [#935](https://github.com/VoltAgent/voltagent/pull/935) [`e7d984f`](https://github.com/VoltAgent/voltagent/commit/e7d984fe391cd2732886c7903f028ce33f40cfab) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: MCPClient.listResources now returns the raw MCP `resources/list` response.
+
+## 2.0.9
+
+### Patch Changes
+
+- [#929](https://github.com/VoltAgent/voltagent/pull/929) [`78ff377`](https://github.com/VoltAgent/voltagent/commit/78ff377b200c48e90a2e3ab510d0d25ccca86c5a) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add workflow control steps (branch, foreach, loop, map, sleep)
+
+  ```ts
+  import {
+    createWorkflowChain,
+    andThen,
+    andBranch,
+    andForEach,
+    andDoWhile,
+    andDoUntil,
+    andMap,
+    andSleep,
+    andSleepUntil,
+  } from "@voltagent/core";
+  import { z } from "zod";
+  ```
+
+  Branching:
+
+  ```ts
+  const workflow = createWorkflowChain({
+    id: "branching-flow",
+    input: z.object({ amount: z.number() }),
+  }).andBranch({
+    id: "rules",
+    branches: [
+      {
+        condition: ({ data }) => data.amount > 1000,
+        step: andThen({
+          id: "flag-large",
+          execute: async ({ data }) => ({ ...data, large: true }),
+        }),
+      },
+      {
+        condition: ({ data }) => data.amount < 0,
+        step: andThen({
+          id: "flag-invalid",
+          execute: async ({ data }) => ({ ...data, invalid: true }),
+        }),
+      },
+    ],
+  });
+  ```
+
+  For-each and loops:
+
+  ```ts
+  createWorkflowChain({
+    id: "batch-process",
+    input: z.array(z.number()),
+  }).andForEach({
+    id: "double-each",
+    concurrency: 2,
+    step: andThen({
+      id: "double",
+      execute: async ({ data }) => data * 2,
+    }),
+  });
+
+  createWorkflowChain({
+    id: "looping-flow",
+    input: z.number(),
+  })
+    .andDoWhile({
+      id: "increment-until-3",
+      step: andThen({
+        id: "increment",
+        execute: async ({ data }) => data + 1,
+      }),
+      condition: ({ data }) => data < 3,
+    })
+    .andDoUntil({
+      id: "increment-until-2",
+      step: andThen({
+        id: "increment-until",
+        execute: async ({ data }) => data + 1,
+      }),
+      condition: ({ data }) => data >= 2,
+    });
+  ```
+
+  Data shaping:
+
+  ```ts
+  createWorkflowChain({
+    id: "compose-result",
+    input: z.object({ userId: z.string() }),
+  })
+    .andThen({
+      id: "fetch-user",
+      execute: async ({ data }) => ({ name: "Ada", id: data.userId }),
+    })
+    .andMap({
+      id: "shape-output",
+      map: {
+        userId: { source: "data", path: "userId" },
+        name: { source: "step", stepId: "fetch-user", path: "name" },
+        region: { source: "context", key: "region" },
+        constant: { source: "value", value: "ok" },
+      },
+    });
+  ```
+
+  Sleep:
+
+  ```ts
+  createWorkflowChain({
+    id: "delayed-step",
+    input: z.object({ id: z.string() }),
+  })
+    .andSleep({
+      id: "pause",
+      duration: 500,
+    })
+    .andSleepUntil({
+      id: "wait-until",
+      date: () => new Date(Date.now() + 60_000),
+    })
+    .andThen({
+      id: "continue",
+      execute: async ({ data }) => ({ ...data, resumed: true }),
+    });
+  ```
+
+  Workflow-level retries:
+
+  ```ts
+  createWorkflowChain({
+    id: "retry-defaults",
+    retryConfig: { attempts: 2, delayMs: 500 },
+  })
+    .andThen({
+      id: "fetch-user",
+      execute: async ({ data }) => fetchUser(data.userId),
+    })
+    .andThen({
+      id: "no-retry-step",
+      retries: 0,
+      execute: async ({ data }) => data,
+    });
+  ```
+
+  Workflow hooks (finish/error/suspend):
+
+  ```ts
+  createWorkflowChain({
+    id: "hooked-workflow",
+    hooks: {
+      onSuspend: async (info) => {
+        console.log("Suspended:", info.suspension?.reason);
+      },
+      onError: async (info) => {
+        console.error("Failed:", info.error);
+      },
+      onFinish: async (info) => {
+        console.log("Done:", info.status);
+      },
+      onEnd: async (state, info) => {
+        if (info?.status === "completed") {
+          console.log("Result:", state.result);
+          console.log("Steps:", Object.keys(info.steps));
+        }
+      },
+    },
+  });
+  ```
+
+  Workflow guardrails (input/output + step-level):
+
+  ```ts
+  import {
+    andGuardrail,
+    andThen,
+    createInputGuardrail,
+    createOutputGuardrail,
+    createWorkflowChain,
+  } from "@voltagent/core";
+  import { z } from "zod";
+
+  const trimInput = createInputGuardrail({
+    name: "trim",
+    handler: async ({ input }) => ({
+      pass: true,
+      action: "modify",
+      modifiedInput: typeof input === "string" ? input.trim() : input,
+    }),
+  });
+
+  const redactOutput = createOutputGuardrail<string>({
+    name: "redact",
+    handler: async ({ output }) => ({
+      pass: true,
+      action: "modify",
+      modifiedOutput: output.replace(/[0-9]/g, "*"),
+    }),
+  });
+
+  createWorkflowChain({
+    id: "guarded-workflow",
+    input: z.string(),
+    result: z.string(),
+    inputGuardrails: [trimInput],
+    outputGuardrails: [redactOutput],
+  })
+    .andGuardrail({
+      id: "sanitize-step",
+      outputGuardrails: [redactOutput],
+    })
+    .andThen({
+      id: "finish",
+      execute: async ({ data }) => data,
+    });
+  ```
+
+## 2.0.8
+
+### Patch Changes
+
+- [#927](https://github.com/VoltAgent/voltagent/pull/927) [`2712078`](https://github.com/VoltAgent/voltagent/commit/27120782e6e278a53d049ae2a60ce9981140d490) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: enable `andAgent` tool usage by switching to `generateText` with `Output.object` while keeping structured output
+
+  Example:
+
+  ```ts
+  import { Agent, createTool, createWorkflowChain } from "@voltagent/core";
+  import { z } from "zod";
+  import { openai } from "@ai-sdk/openai";
+
+  const getWeather = createTool({
+    name: "get_weather",
+    description: "Get weather for a city",
+    parameters: z.object({ city: z.string() }),
+    execute: async ({ city }) => ({ city, temp: 72, condition: "sunny" }),
+  });
+
+  const agent = new Agent({
+    name: "WeatherAgent",
+    model: openai("gpt-4o-mini"),
+    tools: [getWeather],
+  });
+
+  const workflow = createWorkflowChain({
+    id: "weather-flow",
+    input: z.object({ city: z.string() }),
+  }).andAgent(({ data }) => `What is the weather in ${data.city}?`, agent, {
+    schema: z.object({ temp: z.number(), condition: z.string() }),
+  });
+  ```
+
+## 2.0.7
+
+### Patch Changes
+
+- [#921](https://github.com/VoltAgent/voltagent/pull/921) [`c4591fa`](https://github.com/VoltAgent/voltagent/commit/c4591fa92de6df75a22a758b0232669053bd2b62) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add resumable streaming support via @voltagent/resumable-streams, with server adapters that let clients reconnect to in-flight streams.
+
+  ```ts
+  import { openai } from "@ai-sdk/openai";
+  import { Agent, VoltAgent } from "@voltagent/core";
+  import {
+    createResumableStreamAdapter,
+    createResumableStreamRedisStore,
+  } from "@voltagent/resumable-streams";
+  import { honoServer } from "@voltagent/server-hono";
+
+  const streamStore = await createResumableStreamRedisStore();
+  const resumableStream = await createResumableStreamAdapter({ streamStore });
+
+  const agent = new Agent({
+    id: "assistant",
+    name: "Resumable Stream Agent",
+    instructions: "You are a helpful assistant.",
+    model: openai("gpt-4o-mini"),
+  });
+
+  new VoltAgent({
+    agents: { assistant: agent },
+    server: honoServer({
+      resumableStream: { adapter: resumableStream },
+    }),
+  });
+
+  await fetch("http://localhost:3141/agents/assistant/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: `{"input":"Hello!","options":{"conversationId":"conv-1","userId":"user-1","resumableStream":true}}`,
+  });
+
+  // Resume the same stream after reconnect/refresh
+  const resumeResponse = await fetch(
+    "http://localhost:3141/agents/assistant/chat/conv-1/stream?userId=user-1"
+  );
+
+  const reader = resumeResponse.body?.getReader();
+  const decoder = new TextDecoder();
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    console.log(chunk);
+  }
+  ```
+
+  AI SDK client (resume on refresh):
+
+  ```tsx
+  import { useChat } from "@ai-sdk/react";
+  import { DefaultChatTransport } from "ai";
+
+  const { messages, sendMessage } = useChat({
+    id: chatId,
+    messages: initialMessages,
+    resume: true,
+    transport: new DefaultChatTransport({
+      api: "/api/chat",
+      prepareSendMessagesRequest: ({ id, messages }) => ({
+        body: {
+          message: messages[messages.length - 1],
+          options: { conversationId: id, userId },
+        },
+      }),
+      prepareReconnectToStreamRequest: ({ id }) => ({
+        api: `/api/chat/${id}/stream?userId=${encodeURIComponent(userId)}`,
+      }),
+    }),
+  });
+  ```
+
+## 2.0.6
+
+### Patch Changes
+
+- [`ad5ebe7`](https://github.com/VoltAgent/voltagent/commit/ad5ebe7f02a059b647d4862faeab537b293ab387) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: OutputSpec export
+
+## 2.0.5
+
+### Patch Changes
+
+- [#916](https://github.com/VoltAgent/voltagent/pull/916) [`0707471`](https://github.com/VoltAgent/voltagent/commit/070747195992828845d7c4c4ff9711f3638c32f8) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: infer structured output types for `generateText`
+
+  `generateText` now propagates the provided `Output.*` spec into the return type, so `result.output` is no longer `unknown` when using `Output.object`, `Output.array`, etc.
+
+## 2.0.4
+
+### Patch Changes
+
+- [#911](https://github.com/VoltAgent/voltagent/pull/911) [`975831a`](https://github.com/VoltAgent/voltagent/commit/975831a852ea471adb621a1d87990a8ffbc5ed31) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: expose Cloudflare Workers `env` bindings in serverless contexts
+
+  When using `@voltagent/serverless-hono` on Cloudflare Workers, the runtime `env` is now injected into the
+  context map for agent requests, workflow runs, and tool executions. `@voltagent/core` exports
+  `SERVERLESS_ENV_CONTEXT_KEY` so you can access bindings like D1 from `options.context` (tools) or
+  `state.context` (workflow steps). Tool execution also accepts `context` as a `Map`, preserving
+  `userId`/`conversationId` when provided that way.
+
+  `@voltagent/core` is also marked as side-effect free so edge bundlers can tree-shake the PlanAgent
+  filesystem backend, avoiding Node-only dependency loading when it is not used.
+
+  Usage:
+
+  ```ts
+  import { createTool, SERVERLESS_ENV_CONTEXT_KEY } from "@voltagent/core";
+  import type { D1Database } from "@cloudflare/workers-types";
+  import { z } from "zod";
+
+  type Env = { DB: D1Database };
+
+  export const listUsers = createTool({
+    name: "list-users",
+    description: "Fetch users from D1",
+    parameters: z.object({}),
+    execute: async (_args, options) => {
+      const env = options?.context?.get(SERVERLESS_ENV_CONTEXT_KEY) as Env | undefined;
+      const db = env?.DB;
+      if (!db) {
+        throw new Error("D1 binding is missing (env.DB)");
+      }
+
+      const { results } = await db.prepare("SELECT id, name FROM users").all();
+      return results;
+    },
+  });
+  ```
+
+## 2.0.3
+
+### Patch Changes
+
+- [#909](https://github.com/VoltAgent/voltagent/pull/909) [`b4301c7`](https://github.com/VoltAgent/voltagent/commit/b4301c73656ea96ea276cb37b4bf72af7fd8c926) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: avoid TS4053 declaration emit errors when exporting `generateText` wrappers by decoupling ai-sdk `Output` types from public results
+
+## 2.0.2
+
+### Patch Changes
+
+- [`f6ffb8a`](https://github.com/VoltAgent/voltagent/commit/f6ffb8ae0fd95fbe920058e707d492d8c21b2505) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: VoltAgent 2.x (AI SDK v6)
+
+  VoltAgent 2.x aligns the framework with AI SDK v6 and adds new features. VoltAgent APIs are compatible, but if you call AI SDK directly, follow the upstream v6 migration guide.
+
+  Migration summary (1.x -> 2.x):
+  1. Update VoltAgent packages
+  - `npm run volt update`
+  - If the CLI is missing: `npx @voltagent/cli init` then `npm run volt update`
+  2. Align AI SDK packages
+  - `pnpm add ai@^6 @ai-sdk/provider@^3 @ai-sdk/provider-utils@^4 @ai-sdk/openai@^3`
+  - If you use UI hooks, upgrade `@ai-sdk/react` to `^3`
+  3. Structured output
+  - `generateObject` and `streamObject` are deprecated in VoltAgent 2.x
+  - Use `generateText` / `streamText` with `Output.object(...)`
+
+  Full migration guide: https://voltagent.dev/docs/getting-started/migration-guide/
+
+- Updated dependencies [[`f6ffb8a`](https://github.com/VoltAgent/voltagent/commit/f6ffb8ae0fd95fbe920058e707d492d8c21b2505)]:
+  - @voltagent/internal@1.0.2
+  - @voltagent/logger@2.0.2
+
+## 2.0.1
+
+### Patch Changes
+
+- [`c3943aa`](https://github.com/VoltAgent/voltagent/commit/c3943aa89a7bee113d99404ecd5a81a62bc159c2) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: VoltAgent 2.x (AI SDK v6)
+
+  VoltAgent 2.x aligns the framework with AI SDK v6 and adds new features. VoltAgent APIs are compatible, but if you call AI SDK directly, follow the upstream v6 migration guide.
+
+  Migration summary (1.x -> 2.x):
+  1. Update VoltAgent packages
+  - `npm run volt update`
+  - If the CLI is missing: `npx @voltagent/cli init` then `npm run volt update`
+  2. Align AI SDK packages
+  - `pnpm add ai@^6 @ai-sdk/provider@^3 @ai-sdk/provider-utils@^4 @ai-sdk/openai@^3`
+  - If you use UI hooks, upgrade `@ai-sdk/react` to `^3`
+  3. Structured output
+  - `generateObject` and `streamObject` are deprecated in VoltAgent 2.x
+  - Use `generateText` / `streamText` with `Output.object(...)`
+
+  Full migration guide: https://voltagent.dev/docs/getting-started/migration-guide/
+
+- Updated dependencies [[`c3943aa`](https://github.com/VoltAgent/voltagent/commit/c3943aa89a7bee113d99404ecd5a81a62bc159c2)]:
+  - @voltagent/internal@1.0.1
+  - @voltagent/logger@2.0.1
+
+## 2.0.0
+
+### Major Changes
+
+- [#894](https://github.com/VoltAgent/voltagent/pull/894) [`ee05549`](https://github.com/VoltAgent/voltagent/commit/ee055498096b1b99015a8362903712663969677f) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: VoltAgent 2.x (AI SDK v6)
+
+  VoltAgent 2.x aligns the framework with AI SDK v6 and adds new features. VoltAgent APIs are compatible, but if you call AI SDK directly, follow the upstream v6 migration guide.
+
+  Migration summary (1.x -> 2.x):
+  1. Update VoltAgent packages
+  - `npm run volt update`
+  - If the CLI is missing: `npx @voltagent/cli init` then `npm run volt update`
+  2. Align AI SDK packages
+  - `pnpm add ai@^6 @ai-sdk/provider@^3 @ai-sdk/provider-utils@^4 @ai-sdk/openai@^3`
+  - If you use UI hooks, upgrade `@ai-sdk/react` to `^3`
+  3. Structured output
+  - `generateObject` and `streamObject` are deprecated in VoltAgent 2.x
+  - Use `generateText` / `streamText` with `Output.object(...)`
+
+  Full migration guide: https://voltagent.dev/docs/getting-started/migration-guide/
+
+### Patch Changes
+
+- Updated dependencies [[`ee05549`](https://github.com/VoltAgent/voltagent/commit/ee055498096b1b99015a8362903712663969677f)]:
+  - @voltagent/internal@1.0.0
+  - @voltagent/logger@2.0.0
+
+## 1.5.2
+
+### Patch Changes
+
+- [#895](https://github.com/VoltAgent/voltagent/pull/895) [`f2a3ba8`](https://github.com/VoltAgent/voltagent/commit/f2a3ba8a9e96e78f36a30bba004754b7b61ed69f) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: normalize MCP elicitation requests with empty `message` by falling back to the schema description so handlers receive a usable prompt.
+
+## 1.5.1
+
+### Patch Changes
+
+- [`b663dce`](https://github.com/VoltAgent/voltagent/commit/b663dceb57542d1b85475777f32ceb3671cc1237) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: dedupe MCP endpoints in server startup output and include MCP transport paths (streamable HTTP/SSE) so the actual server endpoint is visible.
+
+## 1.5.0
+
+### Minor Changes
+
+- [#879](https://github.com/VoltAgent/voltagent/pull/879) [`2f81e6d`](https://github.com/VoltAgent/voltagent/commit/2f81e6df4176120bfdbb47c503a4d027164e5a5e) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add VoltAgentRagRetriever to @voltagent/core
+
+  Added `VoltAgentRagRetriever` - a built-in retriever that connects to VoltAgent Knowledge Bases for fully managed RAG. No infrastructure setup required - just upload documents to the Console and start searching.
+
+  ## Features
+  - **Automatic context injection**: Searches before each response and injects relevant context
+  - **Tool-based retrieval**: Use as a tool that the agent calls when needed
+  - **Tag filtering**: Filter results by custom document tags
+  - **Source tracking**: Access retrieved chunk references via `rag.references` context
+
+  ## Usage
+
+  ```typescript
+  import { Agent, VoltAgentRagRetriever } from "@voltagent/core";
+  import { openai } from "@ai-sdk/openai";
+
+  const retriever = new VoltAgentRagRetriever({
+    knowledgeBaseName: "my-docs",
+    topK: 8,
+    includeSources: true,
+  });
+
+  // Option 1: Automatic context injection
+  const agent = new Agent({
+    name: "RAG Assistant",
+    model: openai("gpt-4o-mini"),
+    retriever,
+  });
+
+  // Option 2: Tool-based retrieval
+  const agentWithTool = new Agent({
+    name: "RAG Assistant",
+    model: openai("gpt-4o-mini"),
+    tools: [retriever.tool],
+  });
+  ```
+
+  ## Configuration
+
+  | Option              | Default  | Description                  |
+  | ------------------- | -------- | ---------------------------- |
+  | `knowledgeBaseName` | required | Name of your knowledge base  |
+  | `topK`              | 8        | Number of chunks to retrieve |
+  | `tagFilters`        | null     | Filter by document tags      |
+  | `includeSources`    | true     | Include document metadata    |
+  | `includeSimilarity` | false    | Include similarity scores    |
+
+  ## Environment Variables
+
+  ```bash
+  VOLTAGENT_PUBLIC_KEY=pk_...
+  VOLTAGENT_SECRET_KEY=sk_...
+  # Optional
+  VOLTAGENT_API_BASE_URL=https://api.voltagent.dev
+  ```
+
+## 1.4.0
+
+### Minor Changes
+
+- [#875](https://github.com/VoltAgent/voltagent/pull/875) [`93c52cc`](https://github.com/VoltAgent/voltagent/commit/93c52ccc191d463328a929869e5445abf9ff99df) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add MCP client elicitation support for user input handling
+
+  Added support for handling elicitation requests from MCP servers. When an MCP server needs user input during tool execution (e.g., confirmation dialogs, credentials, or form data), you can now dynamically register handlers to process these requests.
+
+  ## New API
+
+  Access the elicitation bridge via `mcpClient.elicitation`:
+
+  ```ts
+  const clients = await mcpConfig.getClients();
+
+  // Set a persistent handler
+  clients.myServer.elicitation.setHandler(async (request) => {
+    console.log("Server asks:", request.message);
+    console.log("Expected schema:", request.requestedSchema);
+
+    const userConfirmed = await promptUser(request.message);
+
+    return {
+      action: userConfirmed ? "accept" : "decline",
+      content: userConfirmed ? { confirmed: true } : undefined,
+    };
+  });
+
+  // One-time handler (auto-removes after first call)
+  clients.myServer.elicitation.once(async (request) => {
+    return { action: "accept", content: { approved: true } };
+  });
+
+  // Remove handler
+  clients.myServer.elicitation.removeHandler();
+
+  // Check if handler exists
+  if (clients.myServer.elicitation.hasHandler) {
+    console.log("Handler registered");
+  }
+  ```
+
+  ## Agent-Level Elicitation
+
+  Pass elicitation handler directly to `generateText` or `streamText`:
+
+  ```ts
+  const response = await agent.generateText("Do something with MCP", {
+    userId: "user123",
+    elicitation: async (request) => {
+      // Handler receives elicitation request from any MCP tool
+      const confirmed = await askUser(request.message);
+      return {
+        action: confirmed ? "accept" : "decline",
+        content: confirmed ? { confirmed: true } : undefined,
+      };
+    },
+  });
+  ```
+
+  This handler is automatically applied to all MCP tools during the request.
+
+  ## Key Features
+  - **Dynamic handler management**: Add, replace, or remove handlers at runtime
+  - **One-time handlers**: Use `.once()` for handlers that auto-remove after first invocation
+  - **Method chaining**: All methods return `this` for fluent API usage
+  - **Auto-cancellation**: Requests without handlers are automatically cancelled
+  - **Agent-level integration**: Pass handler via `generateText`/`streamText` options
+  - **Full MCP SDK compatibility**: Uses `ElicitRequest` and `ElicitResult` types from `@modelcontextprotocol/sdk`
+
+  ## Exports
+
+  New exports from `@voltagent/core`:
+  - `MCPClient` - MCP client with elicitation support
+  - `UserInputBridge` - Bridge class for handler management
+  - `UserInputHandler` - Handler function type
+
+## 1.3.0
+
+### Minor Changes
+
+- [#870](https://github.com/VoltAgent/voltagent/pull/870) [`63cade8`](https://github.com/VoltAgent/voltagent/commit/63cade8b3226e97b6864a20906a748892f23fb96) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add authorization layer for MCP tools
+
+  Add a `can` function to `MCPConfiguration` that lets you control which MCP tools users can discover and execute. Supports both tool discovery filtering and execution-time checks.
+
+  ## Usage
+
+  ```typescript
+  import { MCPConfiguration, type MCPCanParams } from "@voltagent/core";
+
+  const mcp = new MCPConfiguration({
+    servers: {
+      expenses: { type: "http", url: "http://localhost:3142/mcp" },
+    },
+    authorization: {
+      can: async ({ toolName, action, userId, context }: MCPCanParams) => {
+        const roles = (context?.get("roles") as string[]) ?? [];
+
+        // action is "discovery" (getTools) or "execution" (tool call)
+        if (toolName === "delete_expense" && !roles.includes("admin")) {
+          return { allowed: false, reason: "Admin only" };
+        }
+
+        return true;
+      },
+      filterOnDiscovery: true, // Hide unauthorized tools from tool list
+      checkOnExecution: true, // Verify on each tool call
+    },
+  });
+
+  // Get tools filtered by user's permissions
+  const tools = await mcp.getTools({
+    userId: "user-123",
+    context: { roles: ["manager"] },
+  });
+  ```
+
+  ## `MCPCanParams`
+
+  ```typescript
+  interface MCPCanParams {
+    toolName: string; // Tool name (without server prefix)
+    serverName: string; // MCP server identifier
+    action: "discovery" | "execution"; // When the check is happening
+    arguments?: Record<string, unknown>; // Tool arguments (execution only)
+    userId?: string;
+    context?: Map<string | symbol, unknown>;
+  }
+  ```
+
+  ## Cerbos Integration
+
+  For production use with policy-based authorization:
+
+  ```typescript
+  import { GRPC } from "@cerbos/grpc";
+
+  const cerbos = new GRPC("localhost:3593", { tls: false });
+
+  const mcp = new MCPConfiguration({
+    servers: { expenses: { type: "http", url: "..." } },
+    authorization: {
+      can: async ({ toolName, serverName, userId, context }) => {
+        const roles = (context?.get("roles") as string[]) ?? ["user"];
+
+        const result = await cerbos.checkResource({
+          principal: { id: userId ?? "anonymous", roles },
+          resource: { kind: `mcp::${serverName}`, id: serverName },
+          actions: [toolName],
+        });
+
+        return { allowed: result.isAllowed(toolName) ?? false };
+      },
+      filterOnDiscovery: true,
+      checkOnExecution: true,
+    },
+  });
+  ```
+
+  See the full Cerbos example: [examples/with-cerbos](https://github.com/VoltAgent/voltagent/tree/main/examples/with-cerbos)
+
+## 1.2.21
+
+### Patch Changes
+
+- [#855](https://github.com/VoltAgent/voltagent/pull/855) [`cd500ea`](https://github.com/VoltAgent/voltagent/commit/cd500ea0c71879c4ddbf5662b47758752595cc7d) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add google drive and google calendar actions methods and expose trigger DSL events
+  - The trigger DSL now supports Google Calendar (`on.googleCalendar.*`) and Google Drive (`on.googleDrive.*`) events alongside the new action helpers.
+
+## 1.2.20
+
+### Patch Changes
+
+- [#852](https://github.com/VoltAgent/voltagent/pull/852) [`097f0cf`](https://github.com/VoltAgent/voltagent/commit/097f0cfcc113ae2029e233f67ff7e7c10db3e29d) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: fullStream forwarding from sub-agents so metadata reflects the executing sub-agent (adds executingAgentId/name, parent info, agentPath) instead of the supervisor - #849
+
+  Documentation now calls out the metadata shape and how it appears in fullStream/toUIMessageStream, and the with-subagents example logs forwarded chunks for easy validation.
+
+  Example:
+
+  ```ts
+  const res = await supervisor.streamText("delegate something");
+  for await (const part of res.fullStream) {
+    console.log({
+      type: part.type,
+      subAgent: part.subAgentName,
+      executing: part.executingAgentName,
+      parent: part.parentAgentName,
+      path: part.agentPath,
+    });
+  }
+  ```
+
+  Example output:
+
+  ```json
+  {
+    "type": "tool-call",
+    "subAgent": "Formatter",
+    "executing": "Formatter",
+    "parent": "Supervisor",
+    "path": ["Supervisor", "Formatter"]
+  }
+  ```
+
+## 1.2.19
+
+### Patch Changes
+
+- [`da5b0a1`](https://github.com/VoltAgent/voltagent/commit/da5b0a1992cf5fe9b65cb8bd0cb97a19ce22958f) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add postgres action
+
+  Add a Postgres “execute query” action end‑to‑end: API provider with timeouts/SSL, credential creation, default catalog entry and console test payloads, plus VoltOps SDK/MCP snippets and client typings.
+
+## 1.2.18
+
+### Patch Changes
+
+- [`9e215c6`](https://github.com/VoltAgent/voltagent/commit/9e215c69bce4e4fd3d96adb12b4ba98e3a5fcdb4) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: schema serialization for workflows and tools when projects use Zod 4.
+
+  ## The Problem
+
+  Zod 4 changed its internal `_def` shape (e.g., `type` instead of `typeName`, `shape` as an object, `element` for arrays). Our lightweight `zodSchemaToJsonUI` only understood the Zod 3 layout, so Zod 4 workflows/tools exposed `inputSchema`/`resultSchema` as `{ type: "unknown" }` in `/workflows/{id}` and tool metadata.
+
+  ## The Solution
+
+  Teach `zodSchemaToJsonUI` both v3 and v4 shapes: look at `_def.type` as well as `_def.typeName`, handle v4 object `shape`, array `element`, enum entries, optional/default unwrap, and record value types. Default values are picked up whether they’re stored as a function (v3) or a raw value (v4).
+
+  ## Impact
+
+  API consumers and UIs now see real input/result/output schemas for Zod 4-authored workflows and tools instead of `{ type: "unknown" }`, restoring schema-driven rendering and validation.
+
+- [`7e40045`](https://github.com/VoltAgent/voltagent/commit/7e40045656d6868eb5ca337aad5c6a20532dad17) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: add Gmail actions to VoltOps SDK client
+  - Added `actions.gmail.sendEmail`, `replyToEmail`, `searchEmail`, `getEmail`, `getThread`
+  - Supports inline or stored credentials (OAuth refresh token or service account)
+
+  Usage:
+
+  ```ts
+  import { VoltOpsClient } from "@voltagent/core";
+
+  const voltops = new VoltOpsClient({
+    publicKey: "<public-key>",
+    secretKey: "<secret-key>",
+  });
+
+  await voltops.actions.gmail.sendEmail({
+    credential: { credentialId: "<gmail-credential-id>" },
+    to: ["teammate@example.com"],
+    cc: ["manager@example.com"],
+    subject: "Status update",
+    bodyType: "text",
+    body: "All systems operational.",
+    attachments: [
+      {
+        filename: "notes.txt",
+        content: "YmFzZTY0LWNvbnRlbnQ=",
+        contentType: "text/plain",
+      },
+    ],
+  });
+  ```
+
+## 1.2.17
+
+### Patch Changes
+
+- [#845](https://github.com/VoltAgent/voltagent/pull/845) [`5432f13`](https://github.com/VoltAgent/voltagent/commit/5432f13bddebd869522ebffbedd9843b4476f08b) Thanks [@omeraplak](https://github.com/omeraplak)! - feat: workflow execution listing - #844
+
+  Added a unified way to list workflow runs so teams can audit executions across every storage backend and surface them via the API and console.
+
+  ## What changed
+  - `queryWorkflowRuns` now exists on all memory adapters (in-memory, libsql, Postgres, Supabase, voltagent-memory) with filters for `workflowId`, `status`, `from`, `to`, `limit`, and `offset`.
+  - Server routes are consolidated under `/workflows/executions` (no path param needed); `GET /workflows/:id` also returns the workflow result schema for typed clients. Handler naming is standardized to `listWorkflowRuns`.
+  - VoltOps Console observability panel lists the new endpoint; REST docs updated with query params and sample responses. New unit tests cover handlers and every storage adapter.
+
+  ## Quick fetch
+
+  ```ts
+  await fetch(
+    "http://localhost:3141/workflows/executions?workflowId=expense-approval&status=completed&from=2024-01-01&to=2024-01-31&limit=20&offset=0"
+  );
+  ```
+
+## 1.2.16
+
+### Patch Changes
+
+- [#839](https://github.com/VoltAgent/voltagent/pull/839) [`93e5a8e`](https://github.com/VoltAgent/voltagent/commit/93e5a8ed03d2335d845436752b476881c24931ba) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: expose resultSchema in workflow API response
+
+  Previously, when calling the workflow API endpoint (e.g., `GET /workflows/{id}`), the response included `inputSchema`, `suspendSchema`, and `resumeSchema`, but was missing `resultSchema` (the output schema).
+
+  Now, workflows properly expose their result schema alongside other schemas:
+
+  ```json
+  {
+    "inputSchema": {
+      "type": "object",
+      "properties": { "name": { "type": "string" } },
+      "required": ["name"]
+    },
+    "resultSchema": {
+      "type": "object",
+      "properties": { "greeting": { "type": "string" } },
+      "required": ["greeting"]
+    },
+    "suspendSchema": { "type": "unknown" },
+    "resumeSchema": { "type": "unknown" }
+  }
+  ```
+
+  This allows API consumers to understand the expected output format of a workflow, enabling better client-side validation and documentation generation.
+
+## 1.2.15
+
+### Patch Changes
+
+- [#833](https://github.com/VoltAgent/voltagent/pull/833) [`010aa0a`](https://github.com/VoltAgent/voltagent/commit/010aa0a29a5561201689ecfee4738f0cc40798ce) Thanks [@omeraplak](https://github.com/omeraplak)! - fix: supervisor now prefers each sub-agent’s `purpose` over full `instructions` when listing specialized agents, keeping prompts concise and preventing accidental directive leakage; added test coverage, docs, and example updates to encourage setting a short purpose per sub-agent.
+
 ## 1.2.14
 
 ### Patch Changes
@@ -1832,14 +4348,13 @@
 
   ```typescript
   import { ManagedMemoryAdapter, ManagedMemoryVectorAdapter } from "@voltagent/voltagent-memory";
-  import { AiSdkEmbeddingAdapter, Memory } from "@voltagent/core";
-  import { openai } from "@ai-sdk/openai";
+  import { Memory } from "@voltagent/core";
 
   const memory = new Memory({
     storage: new ManagedMemoryAdapter({
       databaseName: "production-memory",
     }),
-    embedding: new AiSdkEmbeddingAdapter(openai.embedding("text-embedding-3-small")),
+    embedding: "openai/text-embedding-3-small",
     vector: new ManagedMemoryVectorAdapter({
       databaseName: "production-memory",
     }),

@@ -29,7 +29,6 @@ VoltAgent's `Memory` class stores conversation history and enables agents to mai
 ```typescript
 import { Agent, Memory } from "@voltagent/core";
 import { ManagedMemoryAdapter } from "@voltagent/voltagent-memory";
-import { openai } from "@ai-sdk/openai";
 
 const memory = new Memory({
   storage: new ManagedMemoryAdapter({
@@ -39,7 +38,7 @@ const memory = new Memory({
 
 const agent = new Agent({
   name: "Assistant",
-  model: openai("gpt-4o-mini"),
+  model: "openai/gpt-4o-mini",
   memory,
 });
 
@@ -61,6 +60,7 @@ await agent.generateText("What's my name?", {
 For detailed configuration, provider setup, and advanced features:
 
 - **[Memory Overview](./memory/overview.md)** - Full memory system documentation
+- **[Memory API Endpoints](../api/endpoints/memory.md)** - HTTP endpoints for conversations and messages
 - **[Managed Memory](./memory/managed-memory.md)** - Production-ready hosted storage
 - **[Semantic Search](./memory/semantic-search.md)** - Vector-based message retrieval
 - **[Working Memory](./memory/working-memory.md)** - Compact context management
